@@ -733,6 +733,7 @@ const ThreadViewCommand = Schema.Struct({
   type: Schema.Literal("thread.view"),
   commandId: CommandId,
   threadId: ThreadId,
+  viewedThrough: IsoDateTime,
 });
 
 const ThreadMarkUnreadCommand = Schema.Struct({
