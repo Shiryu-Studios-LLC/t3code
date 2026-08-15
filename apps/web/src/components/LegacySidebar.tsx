@@ -112,6 +112,7 @@ import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useDesktopUpdateState } from "../state/desktopUpdate";
 
 import { useThreadActions } from "../hooks/useThreadActions";
+import { useThreadViewState } from "../hooks/useThreadViewState";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { threadEnvironment, useEnvironmentThread } from "../state/threads";
@@ -375,7 +376,8 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
-  const lastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
+  const localLastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
+  const lastVisitedAt = thread.viewedAt ?? localLastVisitedAt;
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
   const runningTerminalIds = useThreadRunningTerminalIds({
     environmentId: thread.environmentId,
@@ -1140,7 +1142,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   );
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
-  const markThreadUnread = useUiStateStore((state) => state.markThreadUnread);
+  const { markUnread } = useThreadViewState();
   const setProjectExpanded = useUiStateStore((state) => state.setProjectExpanded);
   const toggleThreadSelection = useThreadSelectionStore((state) => state.toggleThread);
   const rangeSelectTo = useThreadSelectionStore((state) => state.rangeSelectTo);
@@ -1213,9 +1215,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     useShallow((state) =>
       projectThreads.map(
         (thread) =>
+          thread.viewedAt ??
           state.threadLastVisitedAtById[
             scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))
-          ] ?? null,
+          ] ??
+          null,
       ),
     ),
   );
@@ -1805,8 +1809,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       );
 
       if (clicked === "mark-unread") {
-        for (const { threadKey, thread } of selectedThreadEntries) {
-          markThreadUnread(threadKey, thread.latestTurn?.completedAt);
+        for (const { threadRef, thread } of selectedThreadEntries) {
+          markUnread(threadRef, thread.latestTurn?.completedAt);
         }
         clearSelection();
         return;
@@ -1893,7 +1897,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       archiveThread,
       clearSelection,
       deleteThread,
-      markThreadUnread,
+      markUnread,
       removeFromSelection,
     ],
   );
@@ -2184,7 +2188,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       }
 
       if (clicked === "mark-unread") {
-        markThreadUnread(threadKey, thread.latestTurn?.completedAt);
+        markUnread(threadRef, thread.latestTurn?.completedAt);
         return;
       }
       if (clicked === "copy-path") {
@@ -2236,7 +2240,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       copyThreadIdToClipboard,
       deleteThread,
       handleNewThread,
-      markThreadUnread,
+      markUnread,
       memberProjectByScopedKey,
       project.workspaceRoot,
       startThreadRename,
