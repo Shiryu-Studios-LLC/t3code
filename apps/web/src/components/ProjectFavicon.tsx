@@ -5,11 +5,16 @@ import {
 } from "@t3tools/shared/projectFavicon";
 import { FolderIcon } from "lucide-react";
 import type { ComponentType } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAssetUrlState } from "../assets/assetUrls";
 import { cn } from "~/lib/utils";
 
-const loadedProjectFaviconSrcs = new Map<string, string>();
+interface LoadedProjectFavicon {
+  readonly cacheKey: string;
+  readonly src: string;
+}
+
+const loadedProjectFavicons = new Map<string, LoadedProjectFavicon>();
 
 export function ProjectFavicon(input: {
   environmentId: EnvironmentId;
@@ -19,20 +24,35 @@ export function ProjectFavicon(input: {
   fallbackIcon?: ComponentType<{ className?: string }>;
 }) {
   const state = useProjectFaviconAsset(input);
-  const src = state._tag === "Success" ? state.url : null;
   const FallbackIcon = input.fallbackIcon ?? FolderIcon;
+  const projectKey = JSON.stringify([input.environmentId, input.cwd]);
+  const faviconIsMissing = state._tag === "Success" && isProjectFaviconFallbackUrl(state.url);
 
-  if (!src || isProjectFaviconFallbackUrl(src)) {
+  useEffect(() => {
+    if (faviconIsMissing) loadedProjectFavicons.delete(projectKey);
+  }, [faviconIsMissing, projectKey]);
+
+  const loadedFavicon = loadedProjectFavicons.get(projectKey);
+  const favicon =
+    state._tag === "Success" && !faviconIsMissing
+      ? {
+          cacheKey: getProjectFaviconCacheKey(input.environmentId, input.cwd, state.url),
+          src: state.url,
+        }
+      : faviconIsMissing
+        ? null
+        : (loadedFavicon ?? null);
+
+  if (favicon === null) {
     return <ProjectFaviconFallback className={input.className} icon={FallbackIcon} />;
   }
 
-  const cacheKey = getProjectFaviconCacheKey(input.environmentId, input.cwd, src);
-
   return (
     <ProjectFaviconImage
-      key={cacheKey}
-      cacheKey={cacheKey}
-      src={src}
+      key={projectKey}
+      projectKey={projectKey}
+      cacheKey={favicon.cacheKey}
+      src={favicon.src}
       className={input.className}
       fallbackIcon={FallbackIcon}
     />
@@ -62,23 +82,25 @@ function ProjectFaviconFallback({
 }
 
 function ProjectFaviconImage({
+  projectKey,
   cacheKey,
   src,
   className,
   fallbackIcon: FallbackIcon,
 }: {
+  readonly projectKey: string;
   readonly cacheKey: string;
   readonly src: string;
   readonly className?: string | undefined;
   readonly fallbackIcon: ComponentType<{ className?: string }>;
 }) {
   const [displayedSrc, setDisplayedSrc] = useState<string | null>(
-    () => loadedProjectFaviconSrcs.get(cacheKey) ?? null,
+    () => loadedProjectFavicons.get(projectKey)?.src ?? null,
   );
   const isLoading = displayedSrc !== src;
   const handleLoadError = (failedSrc: string) => {
-    if (loadedProjectFaviconSrcs.get(cacheKey) === failedSrc) {
-      loadedProjectFaviconSrcs.delete(cacheKey);
+    if (loadedProjectFavicons.get(projectKey)?.src === failedSrc) {
+      loadedProjectFavicons.delete(projectKey);
     }
     setDisplayedSrc((currentSrc) => (currentSrc === failedSrc ? null : currentSrc));
   };
@@ -102,7 +124,7 @@ function ProjectFaviconImage({
           alt=""
           className="hidden"
           onLoad={() => {
-            loadedProjectFaviconSrcs.set(cacheKey, src);
+            loadedProjectFavicons.set(projectKey, { cacheKey, src });
             setDisplayedSrc(src);
           }}
           onError={() => handleLoadError(src)}

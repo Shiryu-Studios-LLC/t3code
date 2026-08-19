@@ -12,9 +12,12 @@ import { useAssetUrl } from "../state/assets";
 import {
   beginProjectFaviconRequest,
   createProjectFaviconRequest,
+  forgetLastLoadedProjectFavicon,
+  getLastLoadedProjectFavicon,
   hasLoadedProjectFavicon,
   markProjectFaviconFailed,
   markProjectFaviconLoaded,
+  rememberLastLoadedProjectFavicon,
 } from "./projectFaviconCache";
 
 /* ─── Component ──────────────────────────────────────────────────────── */
@@ -37,17 +40,32 @@ export function ProjectFavicon(props: {
           ...(props.faviconPath ? { path: props.faviconPath } : {}),
         },
   );
-  const renderableFaviconUrl = isProjectFaviconFallbackUrl(faviconUrl) ? null : faviconUrl;
-  const cacheKey =
-    renderableFaviconUrl && props.workspaceRoot
-      ? getProjectFaviconCacheKey(props.environmentId, props.workspaceRoot, renderableFaviconUrl)
+  const projectKey = props.workspaceRoot
+    ? JSON.stringify([props.environmentId, props.workspaceRoot])
+    : null;
+  const faviconIsMissing = isProjectFaviconFallbackUrl(faviconUrl);
+  useLayoutEffect(() => {
+    if (faviconIsMissing && projectKey !== null) {
+      forgetLastLoadedProjectFavicon(projectKey);
+    }
+  }, [faviconIsMissing, projectKey]);
+  const currentRequest =
+    faviconUrl && props.workspaceRoot && !faviconIsMissing
+      ? createProjectFaviconRequest(
+          getProjectFaviconCacheKey(props.environmentId, props.workspaceRoot, faviconUrl),
+          faviconUrl,
+        )
       : null;
+  const faviconRequest = faviconIsMissing
+    ? null
+    : (currentRequest ?? getLastLoadedProjectFavicon(projectKey));
 
   return (
     <ProjectFaviconImage
-      key={cacheKey}
-      cacheKey={cacheKey}
-      faviconUrl={renderableFaviconUrl}
+      key={faviconRequest?.cacheKey ?? null}
+      projectKey={projectKey}
+      cacheKey={faviconRequest?.cacheKey ?? null}
+      faviconUrl={faviconRequest?.faviconUrl ?? null}
       open={props.open}
       projectTitle={props.projectTitle}
       size={size}
@@ -56,6 +74,7 @@ export function ProjectFavicon(props: {
 }
 
 function ProjectFaviconImage(props: {
+  readonly projectKey: string | null;
   readonly cacheKey: string | null;
   readonly faviconUrl: string | null;
   readonly open?: boolean;
@@ -122,10 +141,16 @@ function ProjectFaviconImage(props: {
           contentFit="contain"
           onLoad={() => {
             if (!markProjectFaviconLoaded(faviconRequest)) return;
+            if (props.projectKey !== null) {
+              rememberLastLoadedProjectFavicon(props.projectKey, faviconRequest);
+            }
             setStatus("loaded");
           }}
           onError={() => {
             if (!markProjectFaviconFailed(faviconRequest)) return;
+            if (props.projectKey !== null) {
+              forgetLastLoadedProjectFavicon(props.projectKey, faviconRequest);
+            }
             setStatus("error");
           }}
         />

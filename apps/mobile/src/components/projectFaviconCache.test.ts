@@ -3,9 +3,12 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   beginProjectFaviconRequest,
   createProjectFaviconRequest,
+  forgetLastLoadedProjectFavicon,
+  getLastLoadedProjectFavicon,
   hasLoadedProjectFavicon,
   markProjectFaviconFailed,
   markProjectFaviconLoaded,
+  rememberLastLoadedProjectFavicon,
 } from "./projectFaviconCache";
 
 describe("project favicon cache", () => {
@@ -65,6 +68,27 @@ describe("project favicon cache", () => {
 
     expect(createProjectFaviconRequest(null, firstUrl)).toBeNull();
     expect(createProjectFaviconRequest(null, secondUrl)).toBeNull();
+  });
+
+  it("remembers the last loaded request while an environment is unavailable", () => {
+    const projectKey = "environment-1:/workspace:remembered";
+    const request = createProjectFaviconRequest(
+      "environment-1:/workspace:v5-favicon.svg",
+      "https://environment.example/api/assets/current/v5-favicon.svg",
+    );
+
+    rememberLastLoadedProjectFavicon(projectKey, request);
+    expect(getLastLoadedProjectFavicon(projectKey)).toEqual(request);
+
+    const replacement = createProjectFaviconRequest(
+      "environment-1:/workspace:v6-favicon.svg",
+      "https://environment.example/api/assets/current/v6-favicon.svg",
+    );
+    forgetLastLoadedProjectFavicon(projectKey, replacement);
+    expect(getLastLoadedProjectFavicon(projectKey)).toEqual(request);
+
+    forgetLastLoadedProjectFavicon(projectKey, request);
+    expect(getLastLoadedProjectFavicon(projectKey)).toBeNull();
   });
 
   it("restores the remaining active URL when a newer request ends", () => {

@@ -1,9 +1,10 @@
-import type { ComponentType, Dispatch, ReactElement, SetStateAction } from "react";
+import type { ComponentType, Dispatch, EffectCallback, ReactElement, SetStateAction } from "react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 const testState = vi.hoisted(() => ({
   faviconUrl: "https://environment.test/api/assets/token-a/v1-20-favicon.svg",
+  assetStatus: "Success" as "Failure" | "Loading" | "Success",
   lastResource: null as unknown,
 }));
 
@@ -27,6 +28,9 @@ const hooks = vi.hoisted(() => {
       }
       return slots[index] as unknown[];
     },
+    useEffect(effect: EffectCallback) {
+      effect();
+    },
     useState<T>(initialValue: T | (() => T)): [T, Dispatch<SetStateAction<T>>] {
       const index = nextIndex();
       if (index >= slots.length) {
@@ -47,6 +51,7 @@ vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
     ...actual,
+    useEffect: hooks.useEffect,
     useState: hooks.useState,
   };
 });
@@ -55,13 +60,16 @@ vi.mock("react/compiler-runtime", () => ({ c: hooks.useMemoCache }));
 vi.mock("../assets/assetUrls", () => ({
   useAssetUrlState: (_environmentId: unknown, resource: unknown) => {
     testState.lastResource = resource;
-    return { _tag: "Success", url: testState.faviconUrl };
+    return testState.assetStatus === "Success"
+      ? { _tag: "Success", url: testState.faviconUrl }
+      : { _tag: testState.assetStatus };
   },
 }));
 
 import { ProjectFavicon } from "./ProjectFavicon";
 
 type ProjectFaviconImageProps = {
+  readonly projectKey: string;
   readonly cacheKey: string;
   readonly src: string;
   readonly className?: string | undefined;
@@ -106,6 +114,8 @@ function renderImage(
 describe("ProjectFavicon", () => {
   beforeEach(() => {
     hooks.reset();
+    testState.assetStatus = "Success";
+    testState.faviconUrl = "https://environment.test/api/assets/token-a/v1-20-favicon.svg";
   });
 
   it("falls back when the displayed favicon fails without discarding a valid older image early", () => {
@@ -142,5 +152,60 @@ describe("ProjectFavicon", () => {
       cwd: "/workspace-test",
       path: "brand/icon.svg",
     });
+  });
+
+  it("keeps the last loaded favicon while its environment is disconnected", () => {
+    const environmentId = "environment-disconnect" as EnvironmentId;
+    const cwd = "/workspace-disconnect";
+    hooks.beginRender();
+    const loadedElement = ProjectFavicon({
+      environmentId,
+      cwd,
+    }) as ReactElement<ProjectFaviconImageProps>;
+    hooks.reset();
+
+    const ImageComponent = loadedElement.type as (
+      props: ProjectFaviconImageProps,
+    ) => ProjectFaviconImageElement;
+    const loadingImage = renderImage(ImageComponent, loadedElement.props).props.children[2];
+    loadingImage?.props.onLoad?.();
+
+    testState.assetStatus = "Loading";
+    hooks.beginRender();
+    const disconnectedElement = ProjectFavicon({
+      environmentId,
+      cwd,
+    }) as ReactElement<ProjectFaviconImageProps>;
+
+    expect(disconnectedElement.props.src).toBe(testState.faviconUrl);
+    expect(disconnectedElement.props.cacheKey).toBe(loadedElement.props.cacheKey);
+  });
+
+  it("forgets the loaded favicon when the environment confirms it is missing", () => {
+    const environmentId = "environment-missing" as EnvironmentId;
+    const cwd = "/workspace-missing";
+    hooks.beginRender();
+    const loadedElement = ProjectFavicon({
+      environmentId,
+      cwd,
+    }) as ReactElement<ProjectFaviconImageProps>;
+    hooks.reset();
+
+    const ImageComponent = loadedElement.type as (
+      props: ProjectFaviconImageProps,
+    ) => ProjectFaviconImageElement;
+    renderImage(ImageComponent, loadedElement.props).props.children[2]?.props.onLoad?.();
+
+    testState.faviconUrl =
+      "https://environment.test/api/assets/token-missing/project-favicon-missing";
+    hooks.beginRender();
+    const missingElement = ProjectFavicon({ environmentId, cwd });
+
+    testState.assetStatus = "Loading";
+    hooks.beginRender();
+    const disconnectedElement = ProjectFavicon({ environmentId, cwd });
+
+    expect(disconnectedElement.type).toBe(missingElement.type);
+    expect(disconnectedElement.type).not.toBe(loadedElement.type);
   });
 });

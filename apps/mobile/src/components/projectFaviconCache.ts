@@ -11,6 +11,7 @@ interface ActiveFaviconRequests {
 const MAX_LOADED_FAVICONS = 256;
 const activeFaviconRequests = new Map<string, ActiveFaviconRequests>();
 const loadedFaviconKeys = new Map<string, true>();
+const lastLoadedFaviconRequests = new Map<string, ProjectFaviconRequest>();
 
 export function createProjectFaviconRequest(
   cacheKey: string,
@@ -64,6 +65,36 @@ export function beginProjectFaviconRequest(request: ProjectFaviconRequest) {
 
 export function hasLoadedProjectFavicon(cacheKey: string | null) {
   return cacheKey !== null && loadedFaviconKeys.has(cacheKey);
+}
+
+export function getLastLoadedProjectFavicon(projectKey: string | null) {
+  return projectKey === null ? null : (lastLoadedFaviconRequests.get(projectKey) ?? null);
+}
+
+export function rememberLastLoadedProjectFavicon(
+  projectKey: string,
+  request: ProjectFaviconRequest,
+) {
+  lastLoadedFaviconRequests.delete(projectKey);
+  lastLoadedFaviconRequests.set(projectKey, request);
+
+  if (lastLoadedFaviconRequests.size > MAX_LOADED_FAVICONS) {
+    lastLoadedFaviconRequests.delete(lastLoadedFaviconRequests.keys().next().value!);
+  }
+}
+
+export function forgetLastLoadedProjectFavicon(
+  projectKey: string,
+  request?: ProjectFaviconRequest,
+) {
+  const remembered = lastLoadedFaviconRequests.get(projectKey);
+  if (
+    request !== undefined &&
+    (remembered?.cacheKey !== request.cacheKey || remembered.faviconUrl !== request.faviconUrl)
+  ) {
+    return;
+  }
+  lastLoadedFaviconRequests.delete(projectKey);
 }
 
 function isCurrentProjectFaviconRequest(request: ProjectFaviconRequest) {

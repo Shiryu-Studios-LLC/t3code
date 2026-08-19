@@ -13,4 +13,6 @@ To choose a different icon:
 T3 Code supports SVG, PNG, ICO, JPEG, GIF, AVIF, and WebP files. The selected path applies to
 each checkout in the project group and appears on your connected clients.
 
+After an icon loads, T3 Code keeps it visible during temporary environment disconnects.
+
 To use automatic detection again, select **Automatic**.
