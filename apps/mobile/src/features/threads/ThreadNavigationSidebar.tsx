@@ -24,6 +24,7 @@ import type { SearchBarCommands } from "react-native-screens";
 import { AppText as Text } from "../../components/AppText";
 import { CompactBrandTitle } from "../../components/CompactBrandTitle";
 import { ControlPillMenu } from "../../components/ControlPill";
+import type { ProjectFaviconSource } from "../../components/ProjectFavicon";
 import { SymbolView } from "../../components/AppSymbol";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
@@ -334,6 +335,21 @@ function ThreadNavigationSidebarPane(
       scopedThreads,
     ],
   );
+  const projectFaviconSourceByKey = useMemo(() => {
+    const sources = new Map<string, ProjectFaviconSource>();
+    for (const group of projectScopes) {
+      const source = {
+        projectKey: group.key,
+        environmentId: group.representative.environmentId,
+        workspaceRoot: group.representative.workspaceRoot,
+        faviconPath: group.representative.faviconPath,
+      } satisfies ProjectFaviconSource;
+      for (const project of group.projectRefs) {
+        sources.set(scopedProjectKey(project.environmentId, project.projectId), source);
+      }
+    }
+    return sources;
+  }, [projectScopes]);
   const [groupDisplayStates, setGroupDisplayStates] = useState<
     ReadonlyMap<string, HomeGroupDisplayState>
   >(() => new Map());
@@ -776,6 +792,7 @@ function ThreadNavigationSidebarPane(
       selectedThreadKey: props.selectedThreadKey ?? "",
       projectByKey,
       projectCwdByKey,
+      projectFaviconSourceByKey,
       projectTitleByProjectKey,
       savedConnectionsById,
       serverConfigs,
@@ -867,6 +884,7 @@ function ThreadNavigationSidebarPane(
             <ThreadListV2PendingRow
               pendingTask={item.pendingTask}
               project={projectByKey.get(pendingScopeKey) ?? null}
+              projectFaviconSource={projectFaviconSourceByKey.get(pendingScopeKey)}
               projectTitle={projectTitleByProjectKey.get(pendingScopeKey)}
               environmentLabel={
                 Object.keys(savedConnectionsById).length > 1
@@ -893,6 +911,7 @@ function ThreadNavigationSidebarPane(
               snoozePresetMinute={nowMinute}
               snoozeWakeLabelText={item.snoozeWakeLabelText}
               project={projectByKey.get(scopeKey) ?? null}
+              projectFaviconSource={projectFaviconSourceByKey.get(scopeKey)}
               projectTitle={projectTitleByProjectKey.get(scopeKey)}
               providerDriver={
                 serverConfigs

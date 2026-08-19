@@ -170,12 +170,19 @@ import type { Project } from "../types";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
-function projectFavicon(project: Project) {
+type ProjectWithFaviconSource = Project & {
+  readonly projectKey?: string;
+  readonly faviconSource?: Pick<Project, "environmentId" | "workspaceRoot" | "faviconPath">;
+};
+
+function projectFavicon(project: ProjectWithFaviconSource) {
+  const source = project.faviconSource ?? project;
   return (
     <ProjectFavicon
-      environmentId={project.environmentId}
-      cwd={project.workspaceRoot}
-      faviconPath={project.faviconPath}
+      projectKey={project.projectKey}
+      environmentId={source.environmentId}
+      cwd={source.workspaceRoot}
+      faviconPath={source.faviconPath}
       className={ITEM_ICON_CLASS}
     />
   );
@@ -736,6 +743,8 @@ function OpenCommandPaletteDialog(props: {
     () =>
       projectPickerEntries.map(({ group, targetProject }) => ({
         ...targetProject,
+        projectKey: group.projectKey,
+        faviconSource: group,
         title: group.displayName,
       })),
     [projectPickerEntries],

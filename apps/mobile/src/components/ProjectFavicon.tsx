@@ -3,6 +3,7 @@ import { Image } from "expo-image";
 import { useLayoutEffect, useMemo, useState } from "react";
 import { View } from "react-native";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { derivePhysicalProjectKeyFromPath } from "@t3tools/client-runtime/state/project-grouping";
 import {
   getProjectFaviconCacheKey,
   isProjectFaviconFallbackUrl,
@@ -21,14 +22,20 @@ import {
 } from "./projectFaviconCache";
 
 /* ─── Component ──────────────────────────────────────────────────────── */
-export function ProjectFavicon(props: {
+export interface ProjectFaviconSource {
+  readonly projectKey?: string;
   readonly environmentId: EnvironmentId;
-  readonly open?: boolean;
-  readonly size?: number;
-  readonly projectTitle: string;
   readonly workspaceRoot?: string | null;
   readonly faviconPath?: string | null;
-}) {
+}
+
+export function ProjectFavicon(
+  props: ProjectFaviconSource & {
+    readonly open?: boolean;
+    readonly size?: number;
+    readonly projectTitle: string;
+  },
+) {
   const size = props.size ?? 42;
   const faviconUrl = useAssetUrl(
     props.environmentId,
@@ -41,14 +48,13 @@ export function ProjectFavicon(props: {
         },
   );
   const projectKey = props.workspaceRoot
-    ? JSON.stringify([props.environmentId, props.workspaceRoot])
+    ? (props.projectKey ??
+      derivePhysicalProjectKeyFromPath(props.environmentId, props.workspaceRoot))
     : null;
   const faviconIsMissing = isProjectFaviconFallbackUrl(faviconUrl);
-  useLayoutEffect(() => {
-    if (faviconIsMissing && projectKey !== null) {
-      forgetLastLoadedProjectFavicon(projectKey);
-    }
-  }, [faviconIsMissing, projectKey]);
+  if (faviconIsMissing && projectKey !== null) {
+    forgetLastLoadedProjectFavicon(projectKey);
+  }
   const currentRequest =
     faviconUrl && props.workspaceRoot && !faviconIsMissing
       ? createProjectFaviconRequest(

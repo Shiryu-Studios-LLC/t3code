@@ -28,8 +28,9 @@ const hooks = vi.hoisted(() => {
       }
       return slots[index] as unknown[];
     },
-    useEffect(effect: EffectCallback) {
-      effect();
+    useEffect(_effect: EffectCallback) {
+      // Effects do not run before this test's next render. Cache invalidation
+      // must not depend on a component staying mounted long enough to run one.
     },
     useState<T>(initialValue: T | (() => T)): [T, Dispatch<SetStateAction<T>>] {
       const index = nextIndex();
@@ -179,6 +180,56 @@ describe("ProjectFavicon", () => {
 
     expect(disconnectedElement.props.src).toBe(testState.faviconUrl);
     expect(disconnectedElement.props.cacheKey).toBe(loadedElement.props.cacheKey);
+  });
+
+  it("shares one loaded favicon across members of a logical project group", () => {
+    const projectKey = "repository:pingdotgg/t3code";
+    hooks.beginRender();
+    const loadedElement = ProjectFavicon({
+      projectKey,
+      environmentId: "environment-source" as EnvironmentId,
+      cwd: "/workspace/source",
+    }) as ReactElement<ProjectFaviconImageProps>;
+    hooks.reset();
+
+    const ImageComponent = loadedElement.type as (
+      props: ProjectFaviconImageProps,
+    ) => ProjectFaviconImageElement;
+    renderImage(ImageComponent, loadedElement.props).props.children[2]?.props.onLoad?.();
+
+    testState.assetStatus = "Loading";
+    hooks.beginRender();
+    const siblingElement = ProjectFavicon({
+      projectKey,
+      environmentId: "environment-sibling" as EnvironmentId,
+      cwd: "/different/workspace",
+    }) as ReactElement<ProjectFaviconImageProps>;
+
+    expect(siblingElement.props.src).toBe(testState.faviconUrl);
+  });
+
+  it("normalizes physical project keys", () => {
+    const environmentId = "environment-windows" as EnvironmentId;
+    hooks.beginRender();
+    const loadedElement = ProjectFavicon({
+      environmentId,
+      cwd: "C:\\Work\\T3Code\\",
+    }) as ReactElement<ProjectFaviconImageProps>;
+    hooks.reset();
+
+    const ImageComponent = loadedElement.type as (
+      props: ProjectFaviconImageProps,
+    ) => ProjectFaviconImageElement;
+    renderImage(ImageComponent, loadedElement.props).props.children[2]?.props.onLoad?.();
+
+    testState.assetStatus = "Loading";
+    hooks.beginRender();
+    const normalizedElement = ProjectFavicon({
+      environmentId,
+      cwd: "c:/work/t3code",
+    }) as ReactElement<ProjectFaviconImageProps>;
+
+    expect(normalizedElement.props.src).toBe(testState.faviconUrl);
   });
 
   it("forgets the loaded favicon when the environment confirms it is missing", () => {

@@ -5,8 +5,9 @@ import {
 } from "@t3tools/shared/projectFavicon";
 import { FolderIcon } from "lucide-react";
 import type { ComponentType } from "react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useAssetUrlState } from "../assets/assetUrls";
+import { derivePhysicalProjectKeyFromPath } from "../logicalProject";
 import { cn } from "~/lib/utils";
 
 interface LoadedProjectFavicon {
@@ -16,21 +17,26 @@ interface LoadedProjectFavicon {
 
 const loadedProjectFavicons = new Map<string, LoadedProjectFavicon>();
 
-export function ProjectFavicon(input: {
-  environmentId: EnvironmentId;
-  cwd: string;
-  faviconPath?: string | null | undefined;
-  className?: string | undefined;
-  fallbackIcon?: ComponentType<{ className?: string }>;
-}) {
+export interface ProjectFaviconSource {
+  readonly projectKey?: string | undefined;
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string;
+  readonly faviconPath?: string | null | undefined;
+}
+
+export function ProjectFavicon(
+  input: ProjectFaviconSource & {
+    className?: string | undefined;
+    fallbackIcon?: ComponentType<{ className?: string }>;
+  },
+) {
   const state = useProjectFaviconAsset(input);
   const FallbackIcon = input.fallbackIcon ?? FolderIcon;
-  const projectKey = JSON.stringify([input.environmentId, input.cwd]);
+  const projectKey =
+    input.projectKey ?? derivePhysicalProjectKeyFromPath(input.environmentId, input.cwd);
   const faviconIsMissing = state._tag === "Success" && isProjectFaviconFallbackUrl(state.url);
 
-  useEffect(() => {
-    if (faviconIsMissing) loadedProjectFavicons.delete(projectKey);
-  }, [faviconIsMissing, projectKey]);
+  if (faviconIsMissing) loadedProjectFavicons.delete(projectKey);
 
   const loadedFavicon = loadedProjectFavicons.get(projectKey);
   const favicon =

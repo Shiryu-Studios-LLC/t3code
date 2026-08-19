@@ -791,6 +791,7 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
             control={
               <div className="flex items-center gap-2">
                 <ProjectFavicon
+                  projectKey={group.projectKey}
                   environmentId={representative.environmentId}
                   cwd={representative.workspaceRoot}
                   faviconPath={faviconPath}

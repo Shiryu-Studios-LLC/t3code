@@ -16,7 +16,7 @@ import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSw
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { ControlPillMenu } from "../../components/ControlPill";
-import { ProjectFavicon } from "../../components/ProjectFavicon";
+import { ProjectFavicon, type ProjectFaviconSource } from "../../components/ProjectFavicon";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/time";
@@ -204,6 +204,7 @@ const PENDING_TASK_MENU_ACTIONS: MenuAction[] = [
 export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props: {
   readonly pendingTask: PendingNewTask;
   readonly project: EnvironmentProject | null;
+  readonly projectFaviconSource?: ProjectFaviconSource;
   readonly projectTitle?: string;
   readonly environmentLabel: string | null;
   readonly pane?: "screen" | "sidebar";
@@ -220,6 +221,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   const sidebarPane = props.pane === "sidebar";
   const projectTitle =
     props.projectTitle ?? props.project?.title ?? pendingTask.creation.projectTitle ?? "";
+  const projectFaviconSource = props.projectFaviconSource ?? props.project;
   const branch = pendingTask.creation.branch;
 
   const handleMenuAction = useCallback(
@@ -232,14 +234,8 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   const rowContent = (
     <>
       <View className="flex-row items-center gap-1.5">
-        {props.project ? (
-          <ProjectFavicon
-            environmentId={pendingTask.message.environmentId}
-            faviconPath={props.project.faviconPath}
-            size={15}
-            projectTitle={projectTitle}
-            workspaceRoot={props.project.workspaceRoot}
-          />
+        {projectFaviconSource ? (
+          <ProjectFavicon {...projectFaviconSource} size={15} projectTitle={projectTitle} />
         ) : null}
         <Text className="flex-1 text-sm font-t3-medium text-foreground-muted" numberOfLines={1}>
           {projectTitle}
@@ -324,6 +320,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       native snooze menu while mounted. */
   readonly snoozePresetMinute: string;
   readonly project: EnvironmentProject | null;
+  readonly projectFaviconSource?: ProjectFaviconSource;
   readonly projectTitle?: string;
   readonly providerDriver: string | null;
   /** Which machine hosts the thread. Null when only one environment is
@@ -405,6 +402,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   } = props;
   const snoozedRow = props.snoozed === true;
   const pinnedRow = props.pinned === true;
+  const projectFaviconSource = props.projectFaviconSource ?? props.project;
 
   const pr = useThreadPr(thread, props.projectCwd ?? props.project?.workspaceRoot ?? null);
   const prState = pr?.state ?? null;
@@ -679,13 +677,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const cardContent = (
     <>
       <View className="flex-row items-center gap-1.5">
-        {props.project ? (
+        {projectFaviconSource ? (
           <ProjectFavicon
-            environmentId={thread.environmentId}
-            faviconPath={props.project.faviconPath}
+            {...projectFaviconSource}
             size={15}
-            projectTitle={props.projectTitle ?? props.project.title}
-            workspaceRoot={props.project.workspaceRoot}
+            projectTitle={props.projectTitle ?? props.project?.title ?? ""}
           />
         ) : null}
         <Text
@@ -869,14 +865,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             sidebarPane ? "px-3" : "px-5",
           )}
         >
-          {props.project ? (
+          {projectFaviconSource ? (
             <View className="opacity-40">
               <ProjectFavicon
-                environmentId={thread.environmentId}
-                faviconPath={props.project.faviconPath}
+                {...projectFaviconSource}
                 size={15}
-                projectTitle={props.projectTitle ?? props.project.title}
-                workspaceRoot={props.project.workspaceRoot}
+                projectTitle={props.projectTitle ?? props.project?.title ?? ""}
               />
             </View>
           ) : null}
