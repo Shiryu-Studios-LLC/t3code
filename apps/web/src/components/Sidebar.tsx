@@ -534,7 +534,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
             {props.projectFaviconSource ? (
               <ProjectFavicon {...props.projectFaviconSource} className="size-4 shrink-0" />
             ) : (
-              <FolderIcon className="size-4 shrink-0" />
+              <FolderIcon className="size-4 shrink-0 text-icon-muted" />
             )}
             <span className="min-w-0 flex-1 truncate text-xs font-medium text-secondary-label">
               {props.projectTitle}
@@ -1248,7 +1248,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   fallbackIcon={MessageSquareIcon}
                 />
               ) : (
-                <MessageSquareIcon className="size-4" />
+                <MessageSquareIcon className="size-4 shrink-0 text-icon-muted" />
               )}
             </span>
             {title}
@@ -1400,7 +1400,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               {props.projectFaviconSource ? (
                 <ProjectFavicon {...props.projectFaviconSource} className="size-4 shrink-0" />
               ) : (
-                <FolderIcon className="size-4 shrink-0" />
+                <FolderIcon className="size-4 shrink-0 text-icon-muted" />
               )}
               {props.projectTitle ? (
                 <span
@@ -1678,7 +1678,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
               fallbackIcon={MessageSquareIcon}
             />
           ) : (
-            <MessageSquareIcon className="size-4 shrink-0" />
+            <MessageSquareIcon className="size-4 shrink-0 text-icon-muted" />
           )}
           <span className="min-w-0 flex-1 truncate">{thread.title}</span>
           <span className="shrink-0 text-xs text-muted-foreground/55 tabular-nums">
