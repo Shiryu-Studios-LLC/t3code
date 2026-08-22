@@ -28,7 +28,6 @@ import { useThemeColor } from "../../lib/useThemeColor";
 
 import { AppText as Text } from "../../components/AppText";
 import { EmptyState } from "../../components/EmptyState";
-import type { ProjectFaviconSource } from "../../components/ProjectFavicon";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
 import type { SavedRemoteConnection } from "../../lib/connection";
 import { scopedProjectKey } from "../../lib/scopedEntities";
@@ -397,21 +396,6 @@ export function HomeScreen(props: HomeScreenProps) {
       scopedThreads,
     ],
   );
-  const projectFaviconSourceByKey = useMemo(() => {
-    const sources = new Map<string, ProjectFaviconSource>();
-    for (const group of projectScopes) {
-      const source = {
-        projectKey: group.key,
-        environmentId: group.representative.environmentId,
-        workspaceRoot: group.representative.workspaceRoot,
-        faviconPath: group.representative.faviconPath,
-      } satisfies ProjectFaviconSource;
-      for (const project of group.projectRefs) {
-        sources.set(scopedProjectKey(project.environmentId, project.projectId), source);
-      }
-    }
-    return sources;
-  }, [projectScopes]);
 
   const hasSearchQuery = props.searchQuery.trim().length > 0;
   const listLayout = useMemo(
@@ -787,7 +771,6 @@ export function HomeScreen(props: HomeScreenProps) {
           <ThreadListV2PendingRow
             pendingTask={item.pendingTask}
             project={projectByKey.get(pendingScopeKey) ?? null}
-            projectFaviconSource={projectFaviconSourceByKey.get(pendingScopeKey)}
             projectTitle={v2ProjectTitleByProjectKey.get(pendingScopeKey)}
             environmentLabel={
               Object.keys(props.savedConnectionsById).length > 1
@@ -835,9 +818,6 @@ export function HomeScreen(props: HomeScreenProps) {
           project={
             projectByKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ?? null
           }
-          projectFaviconSource={projectFaviconSourceByKey.get(
-            scopedProjectKey(thread.environmentId, thread.projectId),
-          )}
           projectTitle={v2ProjectTitleByProjectKey.get(
             scopedProjectKey(thread.environmentId, thread.projectId),
           )}
@@ -909,7 +889,6 @@ export function HomeScreen(props: HomeScreenProps) {
       pinningEnvironmentIds,
       pinReorderEnvironmentIds,
       projectByKey,
-      projectFaviconSourceByKey,
       projectCwdByKey,
       props.onArchiveThread,
       props.onDeletePendingTask,

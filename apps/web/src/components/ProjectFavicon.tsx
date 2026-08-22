@@ -1,3 +1,10 @@
+import { useAtomValue } from "@effect/atom-react";
+import {
+  forgetProjectFavicon,
+  getLoadedProjectFavicon,
+  rememberProjectFavicon,
+  subscribeProjectFavicons,
+} from "@t3tools/client-runtime/state/project-favicon";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   getProjectFaviconCacheKey,
@@ -5,44 +12,42 @@ import {
 } from "@t3tools/shared/projectFavicon";
 import { FolderIcon } from "lucide-react";
 import type { ComponentType } from "react";
-import { useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useAssetUrlState } from "../assets/assetUrls";
 import { derivePhysicalProjectKeyFromPath } from "../logicalProject";
+import { projectFaviconSourcesAtom } from "../state/projects";
 import { cn } from "~/lib/utils";
 
-interface LoadedProjectFavicon {
-  readonly cacheKey: string;
-  readonly src: string;
-}
-
-const loadedProjectFavicons = new Map<string, LoadedProjectFavicon>();
-
-export interface ProjectFaviconSource {
-  readonly projectKey?: string | undefined;
-  readonly environmentId: EnvironmentId;
-  readonly cwd: string;
-  readonly faviconPath?: string | null | undefined;
-}
-
-export function ProjectFavicon(
-  input: ProjectFaviconSource & {
-    className?: string | undefined;
-    fallbackIcon?: ComponentType<{ className?: string }>;
-  },
-) {
-  const state = useProjectFaviconAsset(input);
+export function ProjectFavicon(input: {
+  environmentId: EnvironmentId;
+  cwd: string;
+  faviconPath?: string | null | undefined;
+  className?: string | undefined;
+  fallbackIcon?: ComponentType<{ className?: string }>;
+}) {
+  const physicalProjectKey = derivePhysicalProjectKeyFromPath(input.environmentId, input.cwd);
+  const source = useAtomValue(projectFaviconSourcesAtom).get(physicalProjectKey);
+  const projectKey = source?.projectKey ?? physicalProjectKey;
+  const loadedFavicon = useSyncExternalStore(
+    useCallback((listener) => subscribeProjectFavicons(projectKey, listener), [projectKey]),
+    useCallback(() => getLoadedProjectFavicon(projectKey), [projectKey]),
+  );
+  const state = useProjectFaviconAsset(source ?? input);
   const FallbackIcon = input.fallbackIcon ?? FolderIcon;
-  const projectKey =
-    input.projectKey ?? derivePhysicalProjectKeyFromPath(input.environmentId, input.cwd);
   const faviconIsMissing = state._tag === "Success" && isProjectFaviconFallbackUrl(state.url);
 
-  if (faviconIsMissing) loadedProjectFavicons.delete(projectKey);
+  useEffect(() => {
+    if (faviconIsMissing) forgetProjectFavicon(projectKey);
+  }, [faviconIsMissing, projectKey]);
 
-  const loadedFavicon = loadedProjectFavicons.get(projectKey);
   const favicon =
     state._tag === "Success" && !faviconIsMissing
       ? {
-          cacheKey: getProjectFaviconCacheKey(input.environmentId, input.cwd, state.url),
+          cacheKey: getProjectFaviconCacheKey(
+            source?.environmentId ?? input.environmentId,
+            source?.cwd ?? input.cwd,
+            state.url,
+          ),
           src: state.url,
         }
       : faviconIsMissing
@@ -101,13 +106,11 @@ function ProjectFaviconImage({
   readonly fallbackIcon: ComponentType<{ className?: string }>;
 }) {
   const [displayedSrc, setDisplayedSrc] = useState<string | null>(
-    () => loadedProjectFavicons.get(projectKey)?.src ?? null,
+    () => getLoadedProjectFavicon(projectKey)?.src ?? null,
   );
   const isLoading = displayedSrc !== src;
   const handleLoadError = (failedSrc: string) => {
-    if (loadedProjectFavicons.get(projectKey)?.src === failedSrc) {
-      loadedProjectFavicons.delete(projectKey);
-    }
+    forgetProjectFavicon(projectKey, failedSrc);
     setDisplayedSrc((currentSrc) => (currentSrc === failedSrc ? null : currentSrc));
   };
 
@@ -130,7 +133,7 @@ function ProjectFaviconImage({
           alt=""
           className="hidden"
           onLoad={() => {
-            loadedProjectFavicons.set(projectKey, { cacheKey, src });
+            rememberProjectFavicon(projectKey, { cacheKey, src });
             setDisplayedSrc(src);
           }}
           onError={() => handleLoadError(src)}

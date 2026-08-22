@@ -95,6 +95,10 @@
       "types": "./src/state/pullRequests.ts",
       "default": "./src/state/pullRequests.ts"
     },
+    "./state/project-favicon": {
+      "types": "./src/state/projectFavicon.ts",
+      "default": "./src/state/projectFavicon.ts"
+    },
     "./state/project-grouping": {
       "types": "./src/state/projectGrouping.ts",
       "default": "./src/state/projectGrouping.ts"

@@ -133,7 +133,6 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
         onPress={handleToggle}
       >
         <ProjectFavicon
-          projectKey={props.groupKey}
           environmentId={props.project.environmentId}
           faviconPath={props.project.faviconPath}
           open={!props.collapsed}
