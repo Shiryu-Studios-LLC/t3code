@@ -7,6 +7,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import {
   forgetProjectFavicon,
   getLoadedProjectFavicon,
+  getProjectFaviconGeneration,
   rememberProjectFavicon,
   subscribeProjectFavicons,
 } from "@t3tools/client-runtime/state/project-favicon";
@@ -106,10 +107,10 @@ function ProjectFaviconImage(props: {
   readonly size: number;
 }) {
   const iconMuted = useThemeColor("--color-icon-subtle");
-  const currentRequest = useMemo(
-    () => createProjectFaviconRequest(props.cacheKey, props.faviconUrl),
-    [props.cacheKey, props.faviconUrl],
-  );
+  const currentRequest = useMemo(() => {
+    const request = createProjectFaviconRequest(props.cacheKey, props.faviconUrl);
+    return request === null ? null : { ...request, generation: getProjectFaviconGeneration() };
+  }, [props.cacheKey, props.faviconUrl]);
   const loadedRequest = useMemo(
     () =>
       createProjectFaviconRequest(
@@ -171,12 +172,19 @@ function ProjectFaviconImage(props: {
             }}
             contentFit="contain"
             onLoad={() => {
-              if (!isReplacement || !markProjectFaviconLoaded(faviconRequest)) return;
+              if (
+                !isReplacement ||
+                currentRequest?.generation !== getProjectFaviconGeneration() ||
+                !markProjectFaviconLoaded(faviconRequest)
+              ) {
+                return;
+              }
               if (props.projectKey !== null) {
-                rememberProjectFavicon(props.projectKey, {
-                  cacheKey: faviconRequest.cacheKey,
-                  src: faviconRequest.faviconUrl,
-                });
+                rememberProjectFavicon(
+                  props.projectKey,
+                  { cacheKey: faviconRequest.cacheKey, src: faviconRequest.faviconUrl },
+                  currentRequest.generation,
+                );
               }
             }}
             onError={() => {

@@ -25,6 +25,7 @@ export interface LoadedProjectFavicon {
 const loadedFavicons = new Map<string, LoadedProjectFavicon>();
 const faviconListeners = new Map<string, Set<() => void>>();
 const MAX_LOADED_FAVICONS = 256;
+let faviconGeneration = 0;
 
 function shouldReplaceFaviconSource(
   current: EnvironmentProject,
@@ -147,9 +148,19 @@ export function getLoadedProjectFavicon(projectKey: string): LoadedProjectFavico
   return loadedFavicons.get(projectKey) ?? null;
 }
 
-export function rememberProjectFavicon(projectKey: string, favicon: LoadedProjectFavicon): void {
+export function getProjectFaviconGeneration(): number {
+  return faviconGeneration;
+}
+
+export function rememberProjectFavicon(
+  projectKey: string,
+  favicon: LoadedProjectFavicon,
+  generation = faviconGeneration,
+): boolean {
+  if (generation !== faviconGeneration) return false;
+
   const existing = loadedFavicons.get(projectKey);
-  if (existing?.cacheKey === favicon.cacheKey && existing.src === favicon.src) return;
+  if (existing?.cacheKey === favicon.cacheKey && existing.src === favicon.src) return true;
 
   loadedFavicons.delete(projectKey);
   loadedFavicons.set(projectKey, favicon);
@@ -162,6 +173,7 @@ export function rememberProjectFavicon(projectKey: string, favicon: LoadedProjec
   }
 
   notifyFaviconListeners(projectKey);
+  return true;
 }
 
 export function forgetProjectFavicon(projectKey: string, src?: string): void {
@@ -173,6 +185,7 @@ export function forgetProjectFavicon(projectKey: string, src?: string): void {
 }
 
 export function clearProjectFavicons(): void {
+  faviconGeneration++;
   for (const projectKey of loadedFavicons.keys()) {
     forgetProjectFavicon(projectKey);
   }

@@ -10,6 +10,7 @@ import {
   createProjectFaviconSourceAtoms,
   forgetProjectFavicon,
   getLoadedProjectFavicon,
+  getProjectFaviconGeneration,
   rememberProjectFavicon,
   selectProjectFaviconSources,
   subscribeProjectFavicons,
@@ -281,6 +282,16 @@ describe("loaded project favicons", () => {
     expect(getLoadedProjectFavicon("account-project")).toBeNull();
     expect(listener).toHaveBeenCalledTimes(2);
     unsubscribe();
+  });
+
+  it("rejects an icon request that finishes after its account was cleared", () => {
+    const generation = getProjectFaviconGeneration();
+    const favicon = { cacheKey: "previous-account", src: "/icons/previous-account.svg" };
+
+    clearProjectFavicons();
+
+    expect(rememberProjectFavicon("account-project", favicon, generation)).toBe(false);
+    expect(getLoadedProjectFavicon("account-project")).toBeNull();
   });
 
   it("evicts the oldest favicon after the cache reaches its limit", () => {
