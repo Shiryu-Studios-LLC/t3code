@@ -1,6 +1,9 @@
 import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import { createProjectFaviconSourceAtoms } from "@t3tools/client-runtime/state/project-favicon";
-import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
+import {
+  selectProjectGroupingSettings,
+  type ProjectGroupingSettings,
+} from "@t3tools/client-runtime/state/project-grouping";
 import { createEnvironmentProjectAtoms } from "@t3tools/client-runtime/state/projects";
 import { createProjectEnvironmentAtoms } from "@t3tools/client-runtime/state/projects";
 import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
@@ -31,7 +34,14 @@ export const environmentProjects = createEnvironmentProjectAtoms({
 
 const projectGroupingSettingsAtom = Atom.make((get) =>
   selectProjectGroupingSettings(get(clientSettingsAtom)),
-).pipe(Atom.withLabel("web-project-grouping-settings"));
+).pipe(
+  Atom.withEquality<ProjectGroupingSettings>(
+    (current, next) =>
+      current.sidebarProjectGroupingMode === next.sidebarProjectGroupingMode &&
+      current.sidebarProjectGroupingOverrides === next.sidebarProjectGroupingOverrides,
+  ),
+  Atom.withLabel("web-project-grouping-settings"),
+);
 
 export const projectFavicons = createProjectFaviconSourceAtoms({
   projectsAtom: environmentProjects.projectsAtom,

@@ -51,26 +51,58 @@ function scopeProjectFaviconKey(projectKey: string, accountId: string | null): s
   return accountId ? `${accountId}:${projectKey}` : projectKey;
 }
 
+function sourceRejectionKey(
+  projectKey: string,
+  environmentId: EnvironmentId,
+  cwd: string,
+  faviconPath: string | null,
+): string {
+  return `${projectKey}\0${environmentId}\0${cwd}\0${faviconPath ?? ""}`;
+}
+
+export function getProjectFaviconSourceRejectionKey(source: ProjectFaviconSource): string {
+  return sourceRejectionKey(
+    source.projectKey,
+    source.environmentId,
+    source.cwd,
+    source.faviconPath,
+  );
+}
+
 export function selectProjectFaviconSources(input: {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly settings: ProjectGroupingSettings;
   readonly connectedEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly accountId?: string | null;
+  readonly rejectedSourceKeys?: ReadonlySet<string>;
 }): ReadonlyMap<string, ProjectFaviconSource> {
   const sources = new Map<string, ProjectFaviconSource>();
   const groups = buildProjectGroups({ projects: input.projects, settings: input.settings });
 
   for (const group of groups) {
+    const projectKey = scopeProjectFaviconKey(group.key, input.accountId ?? null);
+    const availableMembers = group.members.filter(
+      ({ project }) =>
+        !input.rejectedSourceKeys?.has(
+          sourceRejectionKey(
+            projectKey,
+            project.environmentId,
+            project.workspaceRoot,
+            project.faviconPath ?? null,
+          ),
+        ),
+    );
+    const candidates = availableMembers.length > 0 ? availableMembers : group.members;
     // Older duplicate records can contain an icon that the current record cleared.
-    const source = group.members.reduce(
+    const source = candidates.reduce(
       (current, member) =>
         shouldReplaceFaviconSource(current, member.project, input.connectedEnvironmentIds)
           ? member.project
           : current,
-      group.representative,
+      candidates[0]!.project,
     );
     const faviconSource: ProjectFaviconSource = {
-      projectKey: scopeProjectFaviconKey(group.key, input.accountId ?? null),
+      projectKey,
       environmentId: source.environmentId,
       cwd: source.workspaceRoot,
       faviconPath: source.faviconPath ?? null,
@@ -93,6 +125,9 @@ export function createProjectFaviconSourceAtoms(input: {
   readonly accountSessionAtom: Atom.Atom<{ readonly accountId: string } | null>;
   readonly label: string;
 }) {
+  const rejectedSourcesAtom = Atom.make<ReadonlySet<string>>(new Set<string>()).pipe(
+    Atom.withLabel(`${input.label}:rejected-sources`),
+  );
   const sourceMapAtom = Atom.make((get) => {
     const projects = get(input.projectsAtom);
     const connectedEnvironmentIds = new Set<EnvironmentId>();
@@ -107,6 +142,7 @@ export function createProjectFaviconSourceAtoms(input: {
       settings: get(input.groupingSettingsAtom),
       connectedEnvironmentIds,
       accountId: get(input.accountSessionAtom)?.accountId ?? null,
+      rejectedSourceKeys: get(rejectedSourcesAtom),
     });
   }).pipe(Atom.withLabel(`${input.label}:sources`));
 
@@ -133,7 +169,7 @@ export function createProjectFaviconSourceAtoms(input: {
     }).pipe(Atom.withLabel(`${input.label}:${physicalProjectKey}`));
   });
 
-  return { sourceAtom };
+  return { sourceAtom, rejectedSourcesAtom };
 }
 
 function notifyFaviconListeners(projectKey: string): void {

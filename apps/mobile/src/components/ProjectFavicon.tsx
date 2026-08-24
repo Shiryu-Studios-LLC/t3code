@@ -1,12 +1,13 @@
 import { SymbolView } from "./AppSymbol";
 import { Image } from "expo-image";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useCallback, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 import { View } from "react-native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   forgetProjectFavicon,
   getLoadedProjectFavicon,
+  getProjectFaviconSourceRejectionKey,
   rememberProjectFavicon,
   subscribeProjectFavicons,
 } from "@t3tools/client-runtime/state/project-favicon";
@@ -21,8 +22,7 @@ import { projectFavicons } from "../state/projects";
 import {
   beginProjectFaviconRequest,
   createProjectFaviconRequest,
-  markProjectFaviconFailed,
-  markProjectFaviconLoaded,
+  isCurrentProjectFaviconRequest,
 } from "./projectFaviconCache";
 
 /* ─── Component ──────────────────────────────────────────────────────── */
@@ -39,6 +39,7 @@ export function ProjectFavicon(props: {
     ? derivePhysicalProjectKeyFromPath(props.environmentId, props.workspaceRoot)
     : null;
   const selection = useAtomValue(projectFavicons.sourceAtom(physicalProjectKey ?? ""));
+  const rejectSources = useAtomSet(projectFavicons.rejectedSourcesAtom);
   const source = physicalProjectKey === null ? null : selection.source;
   const projectKey = physicalProjectKey === null ? null : selection.projectKey;
   const environmentId = source?.environmentId ?? props.environmentId;
@@ -75,10 +76,16 @@ export function ProjectFavicon(props: {
       getProjectFaviconCacheKey(environmentId, workspaceRoot, loadedFavicon.src);
 
   useLayoutEffect(() => {
+    if (faviconIsMissing && source !== null) {
+      const rejectedSourceKey = getProjectFaviconSourceRejectionKey(source);
+      rejectSources((current) =>
+        current.has(rejectedSourceKey) ? current : new Set(current).add(rejectedSourceKey),
+      );
+    }
     if (missingLoadedSource && projectKey !== null) {
       forgetProjectFavicon(projectKey);
     }
-  }, [missingLoadedSource, projectKey]);
+  }, [faviconIsMissing, missingLoadedSource, projectKey, rejectSources, source]);
 
   const cacheKey =
     faviconUrl && workspaceRoot && !faviconIsMissing
@@ -174,7 +181,7 @@ function ProjectFaviconImage(props: {
             }}
             contentFit="contain"
             onLoad={() => {
-              if (!isReplacement || !markProjectFaviconLoaded(faviconRequest)) return;
+              if (!isReplacement || !isCurrentProjectFaviconRequest(faviconRequest)) return;
               if (props.projectKey !== null) {
                 rememberProjectFavicon(props.projectKey, {
                   cacheKey: faviconRequest.cacheKey,
@@ -183,7 +190,7 @@ function ProjectFaviconImage(props: {
               }
             }}
             onError={() => {
-              if (isReplacement && !markProjectFaviconFailed(faviconRequest)) return;
+              if (isReplacement && !isCurrentProjectFaviconRequest(faviconRequest)) return;
               if (props.projectKey !== null) {
                 forgetProjectFavicon(props.projectKey, faviconRequest.faviconUrl);
               }

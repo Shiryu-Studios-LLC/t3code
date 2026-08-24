@@ -9,6 +9,7 @@ import {
   createProjectFaviconSourceAtoms,
   forgetProjectFavicon,
   getLoadedProjectFavicon,
+  getProjectFaviconSourceRejectionKey,
   rememberProjectFavicon,
   selectProjectFaviconSources,
   subscribeProjectFavicons,
@@ -257,6 +258,22 @@ describe("project favicon source atoms", () => {
       projectKey: `account-second:${physicalProjectKey}`,
       source: null,
     });
+  });
+
+  it("tries another connected checkout after the selected source has no icon", () => {
+    const missing = makeProject("a-missing");
+    const available = makeProject("z-available");
+    const { registry, favicons } = makeFaviconAtoms([missing, available]);
+    const sourceAtom = favicons.sourceAtom(derivePhysicalProjectKey(missing));
+    const first = registry.get(sourceAtom).source;
+
+    expect(first?.environmentId).toBe(missing.environmentId);
+    expect(first).not.toBeNull();
+    registry.update(favicons.rejectedSourcesAtom, (current) =>
+      new Set(current).add(getProjectFaviconSourceRejectionKey(first!)),
+    );
+
+    expect(registry.get(sourceAtom).source?.environmentId).toBe(available.environmentId);
   });
 });
 

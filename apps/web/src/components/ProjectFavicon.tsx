@@ -1,7 +1,8 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   forgetProjectFavicon,
   getLoadedProjectFavicon,
+  getProjectFaviconSourceRejectionKey,
   rememberProjectFavicon,
   subscribeProjectFavicons,
 } from "@t3tools/client-runtime/state/project-favicon";
@@ -27,6 +28,7 @@ export function ProjectFavicon(input: {
 }) {
   const physicalProjectKey = derivePhysicalProjectKeyFromPath(input.environmentId, input.cwd);
   const { projectKey, source } = useAtomValue(projectFavicons.sourceAtom(physicalProjectKey));
+  const rejectSources = useAtomSet(projectFavicons.rejectedSourcesAtom);
   const loadedFavicon = useSyncExternalStore(
     useCallback((listener) => subscribeProjectFavicons(projectKey, listener), [projectKey]),
     useCallback(() => getLoadedProjectFavicon(projectKey), [projectKey]),
@@ -45,8 +47,14 @@ export function ProjectFavicon(input: {
       );
 
   useLayoutEffect(() => {
+    if (faviconIsMissing && source !== null) {
+      const rejectedSourceKey = getProjectFaviconSourceRejectionKey(source);
+      rejectSources((current) =>
+        current.has(rejectedSourceKey) ? current : new Set(current).add(rejectedSourceKey),
+      );
+    }
     if (missingLoadedSource) forgetProjectFavicon(projectKey);
-  }, [missingLoadedSource, projectKey]);
+  }, [faviconIsMissing, missingLoadedSource, projectKey, rejectSources, source]);
 
   const favicon =
     state._tag === "Success" && !faviconIsMissing

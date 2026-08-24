@@ -10,6 +10,7 @@ const testState = vi.hoisted(() => ({
   accountId: null as string | null,
   assetStatus: "Success" as "Failure" | "Loading" | "Success",
   faviconUrl: "https://environment.test/api/assets/token-a/v1-favicon.svg",
+  rejectedSourceKeys: new Set<string>() as ReadonlySet<string>,
   sources: new Map<
     string,
     {
@@ -59,7 +60,10 @@ vi.mock("react-native", () => ({ View: "View" }));
 vi.mock("./AppSymbol", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../lib/useThemeColor", () => ({ useThemeColor: () => "#fff" }));
 vi.mock("../state/projects", () => ({
-  projectFavicons: { sourceAtom: (physicalProjectKey: string) => physicalProjectKey },
+  projectFavicons: {
+    sourceAtom: (physicalProjectKey: string) => physicalProjectKey,
+    rejectedSourcesAtom: {},
+  },
 }));
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: (physicalProjectKey: string) => {
@@ -71,6 +75,12 @@ vi.mock("@effect/atom-react", () => ({
         (testState.accountId ? `${testState.accountId}:${physicalProjectKey}` : physicalProjectKey),
     };
   },
+  useAtomSet:
+    () =>
+    (update: ReadonlySet<string> | ((current: ReadonlySet<string>) => ReadonlySet<string>)) => {
+      testState.rejectedSourceKeys =
+        typeof update === "function" ? update(testState.rejectedSourceKeys) : update;
+    },
 }));
 vi.mock("../state/assets", () => ({
   useAssetUrlState: () =>
@@ -126,6 +136,7 @@ beforeEach(() => {
   testState.accountId = null;
   testState.assetStatus = "Success";
   testState.faviconUrl = "https://environment.test/api/assets/token-a/v1-favicon.svg";
+  testState.rejectedSourceKeys = new Set();
   testState.sources.clear();
   testState.sources.set(derivePhysicalProjectKeyFromPath(SOURCE_ENVIRONMENT, SOURCE_ROOT), {
     projectKey: GROUP_KEY,

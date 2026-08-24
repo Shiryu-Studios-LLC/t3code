@@ -8,6 +8,7 @@ const testState = vi.hoisted(() => ({
   lastEnvironmentId: null as unknown,
   lastResource: null as unknown,
   accountId: null as string | null,
+  rejectedSourceKeys: new Set<string>() as ReadonlySet<string>,
   sources: new Map<
     string,
     {
@@ -89,11 +90,18 @@ vi.mock("@effect/atom-react", () => ({
         (testState.accountId ? `${testState.accountId}:${physicalProjectKey}` : physicalProjectKey),
     };
   },
+  useAtomSet:
+    () =>
+    (update: ReadonlySet<string> | ((current: ReadonlySet<string>) => ReadonlySet<string>)) => {
+      testState.rejectedSourceKeys =
+        typeof update === "function" ? update(testState.rejectedSourceKeys) : update;
+    },
 }));
 vi.mock("react/compiler-runtime", () => ({ c: hooks.useMemoCache }));
 vi.mock("../state/projects", () => ({
   projectFavicons: {
     sourceAtom: (physicalProjectKey: string) => physicalProjectKey,
+    rejectedSourcesAtom: {},
   },
 }));
 vi.mock("../assets/assetUrls", () => ({
@@ -173,6 +181,7 @@ describe("ProjectFavicon", () => {
     testState.lastEnvironmentId = null;
     testState.lastResource = null;
     testState.accountId = null;
+    testState.rejectedSourceKeys = new Set();
     testState.sources.clear();
     forgetProjectFavicon("repository:pingdotgg/t3code");
     for (const [environmentId, cwd] of [

@@ -3,9 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   beginProjectFaviconRequest,
   createProjectFaviconRequest,
-  hasLoadedProjectFavicon,
-  markProjectFaviconFailed,
-  markProjectFaviconLoaded,
+  isCurrentProjectFaviconRequest,
 } from "./projectFaviconCache";
 
 describe("project favicon cache", () => {
@@ -16,32 +14,14 @@ describe("project favicon cache", () => {
 
     const expiredRequest = createProjectFaviconRequest(cacheKey, expiredUrl);
     const endExpiredRequest = beginProjectFaviconRequest(expiredRequest);
-    markProjectFaviconLoaded(expiredRequest);
     const refreshedRequest = createProjectFaviconRequest(cacheKey, refreshedUrl);
     const endRefreshedRequest = beginProjectFaviconRequest(refreshedRequest);
 
-    expect(markProjectFaviconLoaded(expiredRequest)).toBe(false);
-    expect(markProjectFaviconFailed(expiredRequest)).toBe(false);
-    expect(hasLoadedProjectFavicon(cacheKey)).toBe(true);
-    expect(markProjectFaviconFailed(refreshedRequest)).toBe(true);
-    expect(hasLoadedProjectFavicon(cacheKey)).toBe(false);
+    expect(isCurrentProjectFaviconRequest(expiredRequest)).toBe(false);
+    expect(isCurrentProjectFaviconRequest(refreshedRequest)).toBe(true);
 
     endRefreshedRequest();
     endExpiredRequest();
-  });
-
-  it("evicts the URL that actually failed", () => {
-    const cacheKey = "environment-1:/workspace:v2-favicon.svg";
-    const faviconUrl = "https://environment.example/api/assets/current/v2-favicon.svg";
-    const request = createProjectFaviconRequest(cacheKey, faviconUrl);
-    const endRequest = beginProjectFaviconRequest(request);
-
-    markProjectFaviconLoaded(request);
-
-    expect(markProjectFaviconFailed(request)).toBe(true);
-    expect(hasLoadedProjectFavicon(cacheKey)).toBe(false);
-
-    endRequest();
   });
 
   it("does not supersede a request until the next request begins", () => {
@@ -53,8 +33,7 @@ describe("project favicon cache", () => {
 
     createProjectFaviconRequest(cacheKey, abandonedUrl);
 
-    expect(markProjectFaviconLoaded(committedRequest)).toBe(true);
-    expect(hasLoadedProjectFavicon(cacheKey)).toBe(true);
+    expect(isCurrentProjectFaviconRequest(committedRequest)).toBe(true);
 
     endCommittedRequest();
   });
@@ -80,29 +59,10 @@ describe("project favicon cache", () => {
     const endFirstRequest = beginProjectFaviconRequest(firstRequest);
     const endSecondRequest = beginProjectFaviconRequest(secondRequest);
 
-    expect(markProjectFaviconLoaded(firstRequest)).toBe(false);
+    expect(isCurrentProjectFaviconRequest(firstRequest)).toBe(false);
     endSecondRequest();
-    expect(markProjectFaviconLoaded(firstRequest)).toBe(true);
+    expect(isCurrentProjectFaviconRequest(firstRequest)).toBe(true);
     endFirstRequest();
-    expect(markProjectFaviconLoaded(firstRequest)).toBe(false);
-  });
-
-  it("bounds remembered loaded revisions", () => {
-    const firstCacheKey = "environment-1:/workspace:revision-0";
-    let lastCacheKey = firstCacheKey;
-
-    for (let revision = 0; revision < 300; revision++) {
-      lastCacheKey = `environment-1:/workspace:revision-${revision}`;
-      const request = createProjectFaviconRequest(
-        lastCacheKey,
-        `https://environment.example/api/assets/revision-${revision}/favicon.svg`,
-      );
-      const endRequest = beginProjectFaviconRequest(request);
-      markProjectFaviconLoaded(request);
-      endRequest();
-    }
-
-    expect(hasLoadedProjectFavicon(firstCacheKey)).toBe(false);
-    expect(hasLoadedProjectFavicon(lastCacheKey)).toBe(true);
+    expect(isCurrentProjectFaviconRequest(firstRequest)).toBe(false);
   });
 });
