@@ -11,7 +11,7 @@ import { useEffect, useMemo } from "react";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { useClientSettings, useLegacySidebarEnabled } from "../hooks/useSettings";
 import { openCommandPalette } from "../commandPaletteBus";
-import { readThreadShell, useProjects } from "../state/entities";
+import { readEnvironmentSupportsSettlement, readThreadShell, useProjects } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { selectProjectGroupingSettings } from "../logicalProject";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
@@ -124,6 +124,7 @@ function ChatRouteGlobalShortcuts() {
         event.preventDefault();
         event.stopPropagation();
         if (!routeThreadRef) return;
+        if (!readEnvironmentSupportsSettlement(routeThreadRef.environmentId)) return;
 
         const thread = readThreadShell(routeThreadRef);
         if (!thread) return;
