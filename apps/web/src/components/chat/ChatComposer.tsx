@@ -79,6 +79,7 @@ import { compressImageForStash, compressImageToByteLimit } from "../../lib/image
 import {
   readAttachmentUpload,
   releaseAttachmentUpload,
+  releasePersistedAttachmentUpload,
   retryAttachmentUpload,
   startAttachmentUpload,
   useAttachmentUploadStore,
@@ -2221,7 +2222,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         const skippedFiles = filesToRestore.slice(capacity);
         unrestoredFileNames = skippedFiles.map((file) => file.name);
         for (const file of skippedFiles) {
-          releaseAttachmentUpload(file.id);
+          releasePersistedAttachmentUpload({
+            id: file.id,
+            environmentId,
+            attachmentId: file.attachmentId,
+          });
         }
         if (restoredFiles.length > 0) {
           addComposerDraftFiles(composerDraftTarget, restoredFiles);
@@ -2327,7 +2332,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const { entry: removed, durable } = takeStashEntry(entry.id);
       if (durable && removed) {
         for (const file of removed.files ?? []) {
-          releaseAttachmentUpload(file.id);
+          releasePersistedAttachmentUpload({
+            id: file.id,
+            environmentId: file.environmentId,
+            attachmentId: file.attachmentId,
+          });
         }
       }
       if (!durable) {
@@ -2441,7 +2450,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
       if (evicted) {
         for (const file of evicted.files ?? []) {
-          releaseAttachmentUpload(file.id);
+          releasePersistedAttachmentUpload({
+            id: file.id,
+            environmentId: file.environmentId,
+            attachmentId: file.attachmentId,
+          });
         }
         toastManager.add({
           type: "warning",
