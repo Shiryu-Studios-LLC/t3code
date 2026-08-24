@@ -18,6 +18,7 @@ const testState = vi.hoisted(() => ({
       readonly environmentId: EnvironmentId;
       readonly cwd: string;
       readonly faviconPath?: string | null;
+      readonly hasFallback?: boolean;
     }
   >(),
 }));
@@ -174,6 +175,7 @@ describe("ProjectFavicon", () => {
       projectKey: GROUP_KEY,
       environmentId: "environment-missing" as EnvironmentId,
       cwd: "/workspace/missing",
+      hasFallback: true,
     });
     testState.faviconUrl =
       "https://environment.test/api/assets/token-missing/project-favicon-missing";
@@ -183,6 +185,7 @@ describe("ProjectFavicon", () => {
 
     expect(displayedImage?.props.source.uri).toBe(loadedUrl);
     expect(getLoadedProjectFavicon(GROUP_KEY)?.src).toBe(loadedUrl);
+    expect(testState.rejectedSourceKeys.size).toBe(1);
   });
 
   it("scopes a missing project selection to the current account", () => {

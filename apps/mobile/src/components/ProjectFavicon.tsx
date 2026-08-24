@@ -76,7 +76,7 @@ export function ProjectFavicon(props: {
       getProjectFaviconCacheKey(environmentId, workspaceRoot, loadedFavicon.src);
 
   useLayoutEffect(() => {
-    if (faviconIsMissing && source !== null) {
+    if (faviconIsMissing && source?.hasFallback) {
       const rejectedSourceKey = getProjectFaviconSourceRejectionKey(source);
       rejectSources((current) =>
         current.has(rejectedSourceKey) ? current : new Set(current).add(rejectedSourceKey),

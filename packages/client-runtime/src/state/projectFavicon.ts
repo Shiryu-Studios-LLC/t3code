@@ -15,6 +15,7 @@ export interface ProjectFaviconSource {
   readonly environmentId: EnvironmentId;
   readonly cwd: string;
   readonly faviconPath: string | null;
+  readonly hasFallback: boolean;
 }
 
 export interface ProjectFaviconSelection {
@@ -34,12 +35,7 @@ const MAX_LOADED_FAVICONS = 256;
 function shouldReplaceFaviconSource(
   current: EnvironmentProject,
   candidate: EnvironmentProject,
-  connectedEnvironmentIds: ReadonlySet<EnvironmentId>,
 ): boolean {
-  const currentIsConnected = connectedEnvironmentIds.has(current.environmentId);
-  const candidateIsConnected = connectedEnvironmentIds.has(candidate.environmentId);
-  if (currentIsConnected !== candidateIsConnected) return candidateIsConnected;
-
   const currentHasOverride = current.faviconPath != null;
   const candidateHasOverride = candidate.faviconPath != null;
   if (currentHasOverride !== candidateHasOverride) return candidateHasOverride;
@@ -81,7 +77,11 @@ export function selectProjectFaviconSources(input: {
 
   for (const group of groups) {
     const projectKey = scopeProjectFaviconKey(group.key, input.accountId ?? null);
-    const availableMembers = group.members.filter(
+    const connectedMembers = group.members.filter(({ project }) =>
+      input.connectedEnvironmentIds.has(project.environmentId),
+    );
+    const candidatePool = connectedMembers.length > 0 ? connectedMembers : group.members;
+    const availableMembers = candidatePool.filter(
       ({ project }) =>
         !input.rejectedSourceKeys?.has(
           sourceRejectionKey(
@@ -92,13 +92,11 @@ export function selectProjectFaviconSources(input: {
           ),
         ),
     );
-    const candidates = availableMembers.length > 0 ? availableMembers : group.members;
+    const candidates = availableMembers.length > 0 ? availableMembers : candidatePool;
     // Older duplicate records can contain an icon that the current record cleared.
     const source = candidates.reduce(
       (current, member) =>
-        shouldReplaceFaviconSource(current, member.project, input.connectedEnvironmentIds)
-          ? member.project
-          : current,
+        shouldReplaceFaviconSource(current, member.project) ? member.project : current,
       candidates[0]!.project,
     );
     const faviconSource: ProjectFaviconSource = {
@@ -106,6 +104,7 @@ export function selectProjectFaviconSources(input: {
       environmentId: source.environmentId,
       cwd: source.workspaceRoot,
       faviconPath: source.faviconPath ?? null,
+      hasFallback: availableMembers.length > 1,
     };
 
     for (const member of group.members) {
@@ -160,7 +159,8 @@ export function createProjectFaviconSourceAtoms(input: {
         projectKey === previous?.projectKey &&
         source?.environmentId === previous.source?.environmentId &&
         source?.cwd === previous.source?.cwd &&
-        source?.faviconPath === previous.source?.faviconPath
+        source?.faviconPath === previous.source?.faviconPath &&
+        source?.hasFallback === previous.source?.hasFallback
       ) {
         return previous;
       }

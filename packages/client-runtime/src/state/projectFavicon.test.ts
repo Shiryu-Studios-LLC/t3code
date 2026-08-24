@@ -103,6 +103,7 @@ describe("selectProjectFaviconSources", () => {
         environmentId: first.environmentId,
         cwd: first.workspaceRoot,
         faviconPath: null,
+        hasFallback: true,
       });
       expect(sources.get(derivePhysicalProjectKey(second))).toBe(
         sources.get(derivePhysicalProjectKey(first)),
@@ -121,6 +122,7 @@ describe("selectProjectFaviconSources", () => {
       environmentId: explicit.environmentId,
       cwd: explicit.workspaceRoot,
       faviconPath: "/icons/project.svg",
+      hasFallback: true,
     });
   });
 
@@ -133,6 +135,30 @@ describe("selectProjectFaviconSources", () => {
         connectedEnvironmentIds: new Set([connected.environmentId]),
       }).get(derivePhysicalProjectKey(disconnected))?.environmentId,
     ).toBe(connected.environmentId);
+  });
+
+  it("does not retry a project with only one checkout", () => {
+    const project = makeProject("single");
+
+    expect(selectSources([project]).get(derivePhysicalProjectKey(project))?.hasFallback).toBe(
+      false,
+    );
+  });
+
+  it("reuses a rejected checkout when it is the only connected source", () => {
+    const primary = makeProject("a-primary");
+    const backup = makeProject("z-backup");
+    const first = selectSources([primary, backup]).get(derivePhysicalProjectKey(primary));
+
+    expect(first?.environmentId).toBe(primary.environmentId);
+    expect(first).not.toBeUndefined();
+    const recovered = selectSources([primary, backup], {
+      connectedEnvironmentIds: new Set([first!.environmentId]),
+      rejectedSourceKeys: new Set([getProjectFaviconSourceRejectionKey(first!)]),
+    }).get(derivePhysicalProjectKey(primary));
+
+    expect(recovered?.environmentId).toBe(first!.environmentId);
+    expect(recovered?.hasFallback).toBe(false);
   });
 
   it("keeps the same source after an unrelated project update", () => {
