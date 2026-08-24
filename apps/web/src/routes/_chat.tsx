@@ -1,16 +1,23 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import { effectiveSettled } from "@t3tools/client-runtime/state/thread-settled";
 import { useEffect, useMemo } from "react";
 
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { useClientSettings, useLegacySidebarEnabled } from "../hooks/useSettings";
 import { openCommandPalette } from "../commandPaletteBus";
-import { useProjects } from "../state/entities";
+import { readThreadShell, useProjects } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { selectProjectGroupingSettings } from "../logicalProject";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
 import { dispatchPreviewAction } from "../components/preview/previewActionBus";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useThreadActions } from "../hooks/useThreadActions";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
@@ -19,6 +26,8 @@ import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../termina
 import { isPreviewSupportedInRuntime } from "../previewStateStore";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
+import { threadChangeRequestSnapshotsAtom } from "../components/ThreadStatusIndicators";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 
@@ -27,9 +36,12 @@ function ChatRouteGlobalShortcuts() {
   const selectedThreadKeysSize = useThreadSelectionStore((state) => state.selectedThreadKeys.size);
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread, routeThreadRef } =
     useHandleNewThread();
+  const { settleThread, unsettleThread } = useThreadActions();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const legacySidebarEnabled = useLegacySidebarEnabled();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const autoSettleAfterDays = useClientSettings((settings) => settings.sidebarAutoSettleAfterDays);
+  const autoSettleOnMerge = useClientSettings((settings) => settings.sidebarAutoSettleOnMerge);
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectGroupCount = useMemo(
@@ -108,6 +120,44 @@ function ChatRouteGlobalShortcuts() {
         return;
       }
 
+      if (command === "thread.settle") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!routeThreadRef) return;
+
+        const thread = readThreadShell(routeThreadRef);
+        if (!thread) return;
+
+        const snapshot = appAtomRegistry
+          .get(threadChangeRequestSnapshotsAtom)
+          .get(scopedThreadKey(routeThreadRef));
+        const changeRequest =
+          snapshot != null && (thread.worktreePath === null || snapshot.branch === thread.branch)
+            ? snapshot.pr
+            : null;
+        const settled = effectiveSettled(thread, {
+          now: `${new Date().toISOString().slice(0, 16)}:00.000Z`,
+          autoSettleAfterDays,
+          autoSettleOnMerge,
+          changeRequest,
+        });
+
+        void (settled ? unsettleThread(routeThreadRef) : settleThread(routeThreadRef)).then(
+          (result) => {
+            if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: settled ? "Failed to un-settle thread" : "Failed to settle thread",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            );
+          },
+        );
+        return;
+      }
+
       if (command === "preview.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -159,6 +209,8 @@ function ChatRouteGlobalShortcuts() {
   }, [
     activeDraftThread,
     activeThread,
+    autoSettleAfterDays,
+    autoSettleOnMerge,
     clearSelection,
     handleNewThread,
     keybindings,
@@ -167,8 +219,10 @@ function ChatRouteGlobalShortcuts() {
     projectGroupCount,
     routeThreadRef,
     selectedThreadKeysSize,
+    settleThread,
     legacySidebarEnabled,
     terminalOpen,
+    unsettleThread,
   ]);
 
   return null;
