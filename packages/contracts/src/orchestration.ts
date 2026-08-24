@@ -1003,7 +1003,7 @@ const ThreadHistoryImportCommand = Schema.Struct({
       text: Schema.String,
       createdAt: IsoDateTime,
     }),
-  ),
+  ).check(Schema.isNonEmpty()),
 });
 
 const ThreadProposedPlanUpsertCommand = Schema.Struct({

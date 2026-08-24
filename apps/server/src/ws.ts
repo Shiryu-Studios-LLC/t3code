@@ -15,7 +15,6 @@ import {
   type AuthAccessStreamEvent,
   type AuthEnvironmentScope,
   AuthSessionId,
-  AgentSessionScanError,
   ClientSurface,
   CommandId,
   type DiscoveredLocalServerList,
@@ -439,9 +438,7 @@ const makeWsRpcLayer = (
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerService = yield* ProviderService.ProviderService;
-      const providerSessionDirectory = yield* Effect.serviceOption(
-        ProviderSessionDirectory.ProviderSessionDirectory,
-      );
+      const providerSessionDirectory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
@@ -1966,31 +1963,17 @@ const makeWsRpcLayer = (
         [WS_METHODS.agentSessionsImport]: (input) =>
           observeRpcEffect(
             WS_METHODS.agentSessionsImport,
-            Option.match(providerSessionDirectory, {
-              onNone: () =>
-                Effect.fail(
-                  new AgentSessionScanError({
-                    operation: "read-projects",
-                    cause: new Error("Provider session storage is not available."),
-                  }),
-                ),
-              onSome: (directory) =>
-                importRecentAgentThreads(input).pipe(
-                  Effect.provideService(
-                    AgentSessionScanner.AgentSessionScanner,
-                    agentSessionScanner,
-                  ),
-                  Effect.provideService(
-                    OrchestrationEngine.OrchestrationEngineService,
-                    orchestrationEngine,
-                  ),
-                  Effect.provideService(
-                    ProviderSessionDirectory.ProviderSessionDirectory,
-                    directory,
-                  ),
-                  Effect.provideService(Crypto.Crypto, crypto),
-                ),
-            }),
+            importRecentAgentThreads(input).pipe(
+              Effect.provideService(AgentSessionScanner.AgentSessionScanner, agentSessionScanner),
+              Effect.provideService(
+                OrchestrationEngine.OrchestrationEngineService,
+                orchestrationEngine,
+              ),
+              Effect.provideService(
+                ProviderSessionDirectory.ProviderSessionDirectory,
+                providerSessionDirectory,
+              ),
+            ),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.assetsCreateUrl]: (input) =>
