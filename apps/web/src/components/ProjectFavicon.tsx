@@ -28,7 +28,7 @@ export function ProjectFavicon(input: {
 }) {
   const physicalProjectKey = derivePhysicalProjectKeyFromPath(input.environmentId, input.cwd);
   const { projectKey, source } = useAtomValue(projectFavicons.sourceAtom(physicalProjectKey));
-  const rejectSources = useAtomSet(projectFavicons.rejectedSourcesAtom);
+  const rejectSources = useAtomSet(projectFavicons.rejectedSourcesAtom(projectKey));
   const loadedFavicon = useSyncExternalStore(
     useCallback((listener) => subscribeProjectFavicons(projectKey, listener), [projectKey]),
     useCallback(() => getLoadedProjectFavicon(projectKey), [projectKey]),

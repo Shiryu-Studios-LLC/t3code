@@ -28,6 +28,11 @@ export interface LoadedProjectFavicon {
   readonly src: string;
 }
 
+interface ProjectFaviconGroup {
+  readonly projectKey: string;
+  readonly candidates: ReadonlyArray<EnvironmentProject>;
+}
+
 const loadedFavicons = new Map<string, LoadedProjectFavicon>();
 const faviconListeners = new Map<string, Set<() => void>>();
 const MAX_LOADED_FAVICONS = 256;
@@ -65,53 +70,75 @@ export function getProjectFaviconSourceRejectionKey(source: ProjectFaviconSource
   );
 }
 
-export function selectProjectFaviconSources(input: {
+type ProjectFaviconSourceInput = {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly settings: ProjectGroupingSettings;
   readonly connectedEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly accountId?: string | null;
-  readonly rejectedSourceKeys?: ReadonlySet<string>;
-}): ReadonlyMap<string, ProjectFaviconSource> {
-  const sources = new Map<string, ProjectFaviconSource>();
-  const groups = buildProjectGroups({ projects: input.projects, settings: input.settings });
+};
 
-  for (const group of groups) {
-    const projectKey = scopeProjectFaviconKey(group.key, input.accountId ?? null);
+function buildProjectFaviconGroups(
+  input: ProjectFaviconSourceInput,
+): ReadonlyMap<string, ProjectFaviconGroup> {
+  const groupsByPhysicalProject = new Map<string, ProjectFaviconGroup>();
+  for (const group of buildProjectGroups({ projects: input.projects, settings: input.settings })) {
     const connectedMembers = group.members.filter(({ project }) =>
       input.connectedEnvironmentIds.has(project.environmentId),
     );
-    const candidatePool = connectedMembers.length > 0 ? connectedMembers : group.members;
-    const availableMembers = candidatePool.filter(
-      ({ project }) =>
-        !input.rejectedSourceKeys?.has(
-          sourceRejectionKey(
-            projectKey,
-            project.environmentId,
-            project.workspaceRoot,
-            project.faviconPath ?? null,
-          ),
-        ),
-    );
-    const candidates = availableMembers.length > 0 ? availableMembers : candidatePool;
-    // Older duplicate records can contain an icon that the current record cleared.
-    const source = candidates.reduce(
-      (current, member) =>
-        shouldReplaceFaviconSource(current, member.project) ? member.project : current,
-      candidates[0]!.project,
-    );
-    const faviconSource: ProjectFaviconSource = {
-      projectKey,
-      environmentId: source.environmentId,
-      cwd: source.workspaceRoot,
-      faviconPath: source.faviconPath ?? null,
-      hasFallback: availableMembers.length > 1,
+    const candidates = connectedMembers.length > 0 ? connectedMembers : group.members;
+    const faviconGroup: ProjectFaviconGroup = {
+      projectKey: scopeProjectFaviconKey(group.key, input.accountId ?? null),
+      candidates: candidates.map(({ project }) => project),
     };
-
     for (const member of group.members) {
-      sources.set(member.physicalProjectKey, faviconSource);
+      groupsByPhysicalProject.set(member.physicalProjectKey, faviconGroup);
     }
   }
+  return groupsByPhysicalProject;
+}
 
+function selectProjectFaviconSource(
+  group: ProjectFaviconGroup,
+  rejectedSourceKeys?: ReadonlySet<string>,
+): ProjectFaviconSource {
+  const available = group.candidates.filter(
+    (project) =>
+      !rejectedSourceKeys?.has(
+        sourceRejectionKey(
+          group.projectKey,
+          project.environmentId,
+          project.workspaceRoot,
+          project.faviconPath ?? null,
+        ),
+      ),
+  );
+  const candidates = available.length > 0 ? available : group.candidates;
+  // Group candidates are authoritative physical winners, not stale duplicate records.
+  const source = candidates.reduce((current, candidate) =>
+    shouldReplaceFaviconSource(current, candidate) ? candidate : current,
+  );
+  return {
+    projectKey: group.projectKey,
+    environmentId: source.environmentId,
+    cwd: source.workspaceRoot,
+    faviconPath: source.faviconPath ?? null,
+    hasFallback: available.length > 1,
+  };
+}
+
+export function selectProjectFaviconSources(
+  input: ProjectFaviconSourceInput & { readonly rejectedSourceKeys?: ReadonlySet<string> },
+): ReadonlyMap<string, ProjectFaviconSource> {
+  const sources = new Map<string, ProjectFaviconSource>();
+  const sourceByGroup = new Map<string, ProjectFaviconSource>();
+  for (const [physicalProjectKey, group] of buildProjectFaviconGroups(input)) {
+    let source = sourceByGroup.get(group.projectKey);
+    if (!source) {
+      source = selectProjectFaviconSource(group, input.rejectedSourceKeys);
+      sourceByGroup.set(group.projectKey, source);
+    }
+    sources.set(physicalProjectKey, source);
+  }
   return sources;
 }
 
@@ -124,10 +151,12 @@ export function createProjectFaviconSourceAtoms(input: {
   readonly accountSessionAtom: Atom.Atom<{ readonly accountId: string } | null>;
   readonly label: string;
 }) {
-  const rejectedSourcesAtom = Atom.make<ReadonlySet<string>>(new Set<string>()).pipe(
-    Atom.withLabel(`${input.label}:rejected-sources`),
+  const rejectedSourcesAtom = Atom.family((projectKey: string) =>
+    Atom.make<ReadonlySet<string>>(new Set<string>()).pipe(
+      Atom.withLabel(`${input.label}:rejected-sources:${projectKey}`),
+    ),
   );
-  const sourceMapAtom = Atom.make((get) => {
+  const groupMapAtom = Atom.make((get) => {
     const projects = get(input.projectsAtom);
     const connectedEnvironmentIds = new Set<EnvironmentId>();
     for (const project of projects) {
@@ -136,19 +165,21 @@ export function createProjectFaviconSourceAtoms(input: {
       }
     }
 
-    return selectProjectFaviconSources({
+    return buildProjectFaviconGroups({
       projects,
       settings: get(input.groupingSettingsAtom),
       connectedEnvironmentIds,
       accountId: get(input.accountSessionAtom)?.accountId ?? null,
-      rejectedSourceKeys: get(rejectedSourcesAtom),
     });
-  }).pipe(Atom.withLabel(`${input.label}:sources`));
+  }).pipe(Atom.withLabel(`${input.label}:groups`));
 
   const sourceAtom = Atom.family((physicalProjectKey: string) => {
     let previous: ProjectFaviconSelection | null = null;
     return Atom.make((get): ProjectFaviconSelection => {
-      const source = get(sourceMapAtom).get(physicalProjectKey) ?? null;
+      const group = get(groupMapAtom).get(physicalProjectKey) ?? null;
+      const source = group
+        ? selectProjectFaviconSource(group, get(rejectedSourcesAtom(group.projectKey)))
+        : null;
       const projectKey =
         source?.projectKey ??
         scopeProjectFaviconKey(

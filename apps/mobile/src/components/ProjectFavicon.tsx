@@ -39,9 +39,9 @@ export function ProjectFavicon(props: {
     ? derivePhysicalProjectKeyFromPath(props.environmentId, props.workspaceRoot)
     : null;
   const selection = useAtomValue(projectFavicons.sourceAtom(physicalProjectKey ?? ""));
-  const rejectSources = useAtomSet(projectFavicons.rejectedSourcesAtom);
   const source = physicalProjectKey === null ? null : selection.source;
   const projectKey = physicalProjectKey === null ? null : selection.projectKey;
+  const rejectSources = useAtomSet(projectFavicons.rejectedSourcesAtom(projectKey ?? ""));
   const environmentId = source?.environmentId ?? props.environmentId;
   const workspaceRoot = source?.cwd ?? props.workspaceRoot;
   const faviconPath = source ? source.faviconPath : props.faviconPath;

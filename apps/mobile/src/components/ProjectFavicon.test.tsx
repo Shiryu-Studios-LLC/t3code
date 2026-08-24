@@ -63,7 +63,7 @@ vi.mock("../lib/useThemeColor", () => ({ useThemeColor: () => "#fff" }));
 vi.mock("../state/projects", () => ({
   projectFavicons: {
     sourceAtom: (physicalProjectKey: string) => physicalProjectKey,
-    rejectedSourcesAtom: {},
+    rejectedSourcesAtom: (projectKey: string) => projectKey,
   },
 }));
 vi.mock("@effect/atom-react", () => ({

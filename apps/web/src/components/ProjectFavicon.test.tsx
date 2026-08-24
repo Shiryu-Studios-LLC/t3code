@@ -102,7 +102,7 @@ vi.mock("react/compiler-runtime", () => ({ c: hooks.useMemoCache }));
 vi.mock("../state/projects", () => ({
   projectFavicons: {
     sourceAtom: (physicalProjectKey: string) => physicalProjectKey,
-    rejectedSourcesAtom: {},
+    rejectedSourcesAtom: (projectKey: string) => projectKey,
   },
 }));
 vi.mock("../assets/assetUrls", () => ({

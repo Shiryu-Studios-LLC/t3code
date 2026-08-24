@@ -295,7 +295,7 @@ describe("project favicon source atoms", () => {
 
     expect(first?.environmentId).toBe(missing.environmentId);
     expect(first).not.toBeNull();
-    registry.update(favicons.rejectedSourcesAtom, (current) =>
+    registry.update(favicons.rejectedSourcesAtom(first!.projectKey), (current) =>
       new Set(current).add(getProjectFaviconSourceRejectionKey(first!)),
     );
 
