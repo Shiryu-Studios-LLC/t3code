@@ -1,6 +1,7 @@
 import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import {
   getLoadedProjectFavicon,
+  getProjectFaviconGeneration,
   rememberProjectFavicon,
 } from "@t3tools/client-runtime/state/project-favicon";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -49,6 +50,14 @@ afterEach(() => {
 });
 
 describe("CloudAuthProvider relay account isolation", () => {
+  it("does not invalidate icons when no account is active", () => {
+    const generation = getProjectFaviconGeneration();
+
+    deactivateCloudRelayAccount();
+
+    expect(getProjectFaviconGeneration()).toBe(generation);
+  });
+
   it("clears relay and agent-awareness credentials before cleanup can fail", async () => {
     const tokenProvider = async () => "account-1-token";
     activateCloudRelayAccount("account-1", tokenProvider);

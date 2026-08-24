@@ -1,6 +1,7 @@
 import { managedRelaySessionAtom, setManagedRelaySession } from "@t3tools/client-runtime/relay";
 import {
   getLoadedProjectFavicon,
+  getProjectFaviconGeneration,
   rememberProjectFavicon,
 } from "@t3tools/client-runtime/state/project-favicon";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -33,6 +34,14 @@ afterEach(() => {
 });
 
 describe("managed relay authentication", () => {
+  it("does not invalidate icons when no account is active", () => {
+    const generation = getProjectFaviconGeneration();
+
+    deactivateManagedRelayAuthentication();
+
+    expect(getProjectFaviconGeneration()).toBe(generation);
+  });
+
   it("clears all token access synchronously before account cleanup can fail", async () => {
     activateManagedRelayAuthentication("account-1", async () => "account-1-token");
     rememberProjectFavicon("account-project", {
