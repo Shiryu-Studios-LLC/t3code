@@ -101,11 +101,7 @@ const AssetClaimsJson = Schema.fromJsonString(AssetClaimsSchema);
 const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
-export type ResolvedAsset = {
-  readonly kind: "file";
-  readonly path: string;
-  readonly cache?: "immutable";
-};
+export type ResolvedAsset = { readonly kind: "file"; readonly path: string };
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
   try {
@@ -478,9 +474,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       workspaceRoot: claims.workspaceRoot,
       relativePath: claims.relativePath,
     });
-    return faviconPath
-      ? ({ kind: "file", path: faviconPath, cache: "immutable" } satisfies ResolvedAsset)
-      : null;
+    return faviconPath ? ({ kind: "file", path: faviconPath } satisfies ResolvedAsset) : null;
   }
 
   if (claims.kind === "project-favicon-external") {
@@ -494,7 +488,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       Effect.orElseSucceed(() => null),
     );
     return faviconPath === claims.filePath
-      ? ({ kind: "file", path: faviconPath, cache: "immutable" } satisfies ResolvedAsset)
+      ? ({ kind: "file", path: faviconPath } satisfies ResolvedAsset)
       : null;
   }
 

@@ -1,8 +1,13 @@
 import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import type { PreparedConnection } from "../connection/model.ts";
 import type { EnvironmentProject } from "./models.ts";
 import {
+  clearProjectFavicons,
+  createProjectFaviconSourceAtoms,
   forgetProjectFavicon,
   getLoadedProjectFavicon,
   rememberProjectFavicon,
@@ -13,6 +18,7 @@ import { derivePhysicalProjectKey } from "./projectGrouping.ts";
 
 const repositoryIdentity = {
   canonicalKey: "github.com/t3tools/t3code",
+  rootPath: "/work",
   locator: {
     source: "git-remote" as const,
     remoteName: "origin",
@@ -23,6 +29,23 @@ const repositoryIdentity = {
   name: "t3code",
   displayName: "T3 Code",
 };
+
+const repositoryGrouping = {
+  sidebarProjectGroupingMode: "repository" as const,
+  sidebarProjectGroupingOverrides: {},
+};
+
+function selectSources(
+  projects: ReadonlyArray<EnvironmentProject>,
+  overrides: Partial<Parameters<typeof selectProjectFaviconSources>[0]> = {},
+) {
+  return selectProjectFaviconSources({
+    projects,
+    settings: repositoryGrouping,
+    connectedEnvironmentIds: new Set(projects.map((project) => project.environmentId)),
+    ...overrides,
+  });
+}
 
 function makeProject(id: string, overrides: Partial<EnvironmentProject> = {}): EnvironmentProject {
   return {
@@ -48,11 +71,11 @@ describe("selectProjectFaviconSources", () => {
       [first, second],
       [second, first],
     ]) {
-      const sources = selectProjectFaviconSources(projects);
+      const sources = selectSources(projects);
       expect(sources.get(derivePhysicalProjectKey(first))).toEqual({
         projectKey: repositoryIdentity.canonicalKey,
-        environmentId: second.environmentId,
-        cwd: second.workspaceRoot,
+        environmentId: first.environmentId,
+        cwd: first.workspaceRoot,
         faviconPath: null,
       });
       expect(sources.get(derivePhysicalProjectKey(second))).toBe(
@@ -67,9 +90,7 @@ describe("selectProjectFaviconSources", () => {
       updatedAt: "2026-07-02T00:00:00.000Z",
     });
 
-    expect(
-      selectProjectFaviconSources([automatic, explicit]).get(derivePhysicalProjectKey(automatic)),
-    ).toEqual({
+    expect(selectSources([automatic, explicit]).get(derivePhysicalProjectKey(automatic))).toEqual({
       projectKey: repositoryIdentity.canonicalKey,
       environmentId: explicit.environmentId,
       cwd: explicit.workspaceRoot,
@@ -77,40 +98,99 @@ describe("selectProjectFaviconSources", () => {
     });
   });
 
-  it("uses the creation time when the update time is invalid", () => {
-    const older = makeProject("older", {
-      updatedAt: "invalid",
-      createdAt: "2026-07-01T00:00:00.000Z",
+  it("prefers a connected environment over an unavailable custom icon", () => {
+    const disconnected = makeProject("disconnected", { faviconPath: "custom.svg" });
+    const connected = makeProject("connected");
+
+    expect(
+      selectSources([disconnected, connected], {
+        connectedEnvironmentIds: new Set([connected.environmentId]),
+      }).get(derivePhysicalProjectKey(disconnected))?.environmentId,
+    ).toBe(connected.environmentId);
+  });
+
+  it("prefers the primary environment without switching after unrelated updates", () => {
+    const primary = makeProject("primary");
+    const remote = makeProject("remote");
+
+    const before = selectSources([primary, remote], {
+      preferredEnvironmentId: primary.environmentId,
     });
-    const newer = makeProject("newer", {
-      updatedAt: "invalid",
-      createdAt: "2026-07-02T00:00:00.000Z",
+    const after = selectSources(
+      [primary, { ...remote, title: "Renamed", updatedAt: "2026-08-01T00:00:00.000Z" }],
+      { preferredEnvironmentId: primary.environmentId },
+    );
+
+    expect(before.get(derivePhysicalProjectKey(remote))?.environmentId).toBe(primary.environmentId);
+    expect(after.get(derivePhysicalProjectKey(remote))?.environmentId).toBe(primary.environmentId);
+  });
+
+  it("keeps separate projects on their own configured icons", () => {
+    const first = makeProject("first", { faviconPath: "web.svg" });
+    const second = makeProject("second", { faviconPath: "mobile.svg" });
+    const sources = selectSources([first, second], {
+      settings: { ...repositoryGrouping, sidebarProjectGroupingMode: "separate" },
+    });
+
+    expect(sources.get(derivePhysicalProjectKey(first))?.faviconPath).toBe("web.svg");
+    expect(sources.get(derivePhysicalProjectKey(second))?.faviconPath).toBe("mobile.svg");
+  });
+
+  it("keeps distinct repository paths on their own configured icons", () => {
+    const web = makeProject("web", {
+      workspaceRoot: "/work/apps/web",
+      faviconPath: "web.svg",
+    });
+    const mobile = makeProject("mobile", {
+      workspaceRoot: "/work/apps/mobile",
+      faviconPath: "mobile.svg",
+    });
+    const sources = selectSources([web, mobile], {
+      settings: { ...repositoryGrouping, sidebarProjectGroupingMode: "repository_path" },
+    });
+
+    expect(sources.get(derivePhysicalProjectKey(web))?.faviconPath).toBe("web.svg");
+    expect(sources.get(derivePhysicalProjectKey(mobile))?.faviconPath).toBe("mobile.svg");
+  });
+
+  it("respects per-project grouping overrides", () => {
+    const separate = makeProject("separate", { faviconPath: "separate.svg" });
+    const grouped = makeProject("grouped", { faviconPath: "grouped.svg" });
+    const sources = selectSources([separate, grouped], {
+      settings: {
+        ...repositoryGrouping,
+        sidebarProjectGroupingOverrides: {
+          [derivePhysicalProjectKey(separate)]: "separate",
+        },
+      },
+    });
+
+    expect(sources.get(derivePhysicalProjectKey(separate))?.faviconPath).toBe("separate.svg");
+    expect(sources.get(derivePhysicalProjectKey(grouped))?.faviconPath).toBe("grouped.svg");
+  });
+
+  it("uses the newest physical record when an older duplicate still has a cleared icon", () => {
+    const cleared = makeProject("current", {
+      environmentId: EnvironmentId.make("environment-shared"),
+      workspaceRoot: "/work/shared",
+      faviconPath: null,
+      updatedAt: "2026-07-02T00:00:00.000Z",
+    });
+    const stale = makeProject("stale", {
+      environmentId: cleared.environmentId,
+      workspaceRoot: cleared.workspaceRoot,
+      faviconPath: "removed.svg",
     });
 
     expect(
-      selectProjectFaviconSources([older, newer]).get(derivePhysicalProjectKey(older))
-        ?.environmentId,
-    ).toBe(newer.environmentId);
-  });
-
-  it("breaks equal timestamps with a stable physical project key", () => {
-    const alpha = makeProject("alpha");
-    const beta = makeProject("beta");
-
-    for (const projects of [
-      [alpha, beta],
-      [beta, alpha],
-    ]) {
-      expect(
-        selectProjectFaviconSources(projects).get(derivePhysicalProjectKey(beta))?.environmentId,
-      ).toBe(alpha.environmentId);
-    }
+      selectSources([stale, cleared]).get(derivePhysicalProjectKey(cleared))?.faviconPath,
+    ).toBe(null);
   });
 
   it("keeps projects without repository identity scoped to their physical path", () => {
     const first = makeProject("first", { repositoryIdentity: null });
     const second = makeProject("second", { repositoryIdentity: null });
-    const sources = selectProjectFaviconSources([first, second]);
+    const sources = selectSources([first, second]);
 
     expect(sources.get(derivePhysicalProjectKey(first))).toEqual({
       projectKey: derivePhysicalProjectKey(first),
@@ -119,6 +199,32 @@ describe("selectProjectFaviconSources", () => {
       faviconPath: null,
     });
     expect(sources.get(derivePhysicalProjectKey(second))?.environmentId).toBe(second.environmentId);
+  });
+});
+
+describe("project favicon source atoms", () => {
+  it("preserves a project's selected source when another project changes", () => {
+    const selected = makeProject("selected", { repositoryIdentity: null });
+    const unrelated = makeProject("unrelated", { repositoryIdentity: null });
+    const projectsAtom = Atom.make<ReadonlyArray<EnvironmentProject>>([selected, unrelated]);
+    const preparedConnectionAtom = Atom.family((_environmentId: EnvironmentId) =>
+      Atom.make(Option.none<PreparedConnection>()),
+    );
+    const registry = AtomRegistry.make();
+    const faviconAtoms = createProjectFaviconSourceAtoms({
+      projectsAtom,
+      preparedConnectionAtom,
+      label: "test-project-favicon",
+    });
+    const selectedSourceAtom = faviconAtoms.sourceAtom(
+      derivePhysicalProjectKey(selected),
+      repositoryGrouping,
+    );
+    const firstSource = registry.get(selectedSourceAtom);
+
+    registry.set(projectsAtom, [selected, { ...unrelated, title: "Renamed" }]);
+
+    expect(registry.get(selectedSourceAtom)).toBe(firstSource);
   });
 });
 
@@ -160,6 +266,21 @@ describe("loaded project favicons", () => {
     expect(listener).toHaveBeenCalledTimes(2);
     forgetProjectFavicon(projectKey);
     forgetProjectFavicon("unrelated-project");
+  });
+
+  it("clears loaded icons and notifies their subscribers on account changes", () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeProjectFavicons("account-project", listener);
+    rememberProjectFavicon("account-project", {
+      cacheKey: "account-icon",
+      src: "/icons/account.svg",
+    });
+
+    clearProjectFavicons();
+
+    expect(getLoadedProjectFavicon("account-project")).toBeNull();
+    expect(listener).toHaveBeenCalledTimes(2);
+    unsubscribe();
   });
 
   it("evicts the oldest favicon after the cache reaches its limit", () => {

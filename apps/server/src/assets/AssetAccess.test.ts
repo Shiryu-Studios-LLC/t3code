@@ -239,7 +239,7 @@ describe("AssetAccess", () => {
           faviconSuffix.slice(0, faviconSeparatorIndex),
           faviconSuffix.slice(faviconSeparatorIndex + 1),
         ),
-      ).toEqual({ kind: "file", path: canonicalFaviconPath, cache: "immutable" });
+      ).toEqual({ kind: "file", path: canonicalFaviconPath });
 
       yield* fileSystem.writeFileString(faviconPath, updatedFavicon);
       const updatedFaviconResult = yield* issueAssetUrl({
@@ -315,16 +315,12 @@ describe("AssetAccess", () => {
       expect(result.relativeUrl).toMatch(/\/v[0-9a-f]{64}-custom\.png$/);
       expect(
         yield* resolveAsset(suffix.slice(0, separatorIndex), suffix.slice(separatorIndex + 1)),
-      ).toEqual({ kind: "file", path: canonicalPath, cache: "immutable" });
+      ).toEqual({ kind: "file", path: canonicalPath });
       const tamperedSuffixResult = yield* resolveAsset(
         suffix.slice(0, separatorIndex),
         "sibling.png",
       );
-      expect(tamperedSuffixResult).toEqual({
-        kind: "file",
-        path: canonicalPath,
-        cache: "immutable",
-      });
+      expect(tamperedSuffixResult).toEqual({ kind: "file", path: canonicalPath });
       expect(tamperedSuffixResult).not.toEqual({ kind: "file", path: canonicalSiblingPath });
     }).pipe(Effect.provide(testLayer)),
   );

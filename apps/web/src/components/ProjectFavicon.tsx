@@ -14,8 +14,9 @@ import { FolderIcon } from "lucide-react";
 import type { ComponentType } from "react";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useAssetUrlState } from "../assets/assetUrls";
-import { derivePhysicalProjectKeyFromPath } from "../logicalProject";
-import { projectFaviconSourcesAtom } from "../state/projects";
+import { useClientSettings } from "../hooks/useSettings";
+import { derivePhysicalProjectKeyFromPath, selectProjectGroupingSettings } from "../logicalProject";
+import { projectFavicons } from "../state/projects";
 import { cn } from "~/lib/utils";
 
 export function ProjectFavicon(input: {
@@ -26,7 +27,8 @@ export function ProjectFavicon(input: {
   fallbackIcon?: ComponentType<{ className?: string }>;
 }) {
   const physicalProjectKey = derivePhysicalProjectKeyFromPath(input.environmentId, input.cwd);
-  const source = useAtomValue(projectFaviconSourcesAtom).get(physicalProjectKey);
+  const groupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const source = useAtomValue(projectFavicons.sourceAtom(physicalProjectKey, groupingSettings));
   const projectKey = source?.projectKey ?? physicalProjectKey;
   const loadedFavicon = useSyncExternalStore(
     useCallback((listener) => subscribeProjectFavicons(projectKey, listener), [projectKey]),

@@ -1,5 +1,6 @@
 import { useAuth } from "@clerk/react";
 import { ManagedRelay, setManagedRelaySession } from "@t3tools/client-runtime/relay";
+import { clearProjectFavicons } from "@t3tools/client-runtime/state/project-favicon";
 import {
   reportAtomCommandResult,
   settleAsyncResult,
@@ -22,6 +23,7 @@ export async function readManagedRelayClerkToken(): Promise<string | null> {
 
 export function deactivateManagedRelayAuthentication(): void {
   relayTokenProvider = null;
+  clearProjectFavicons();
   setManagedRelaySession(appAtomRegistry, null);
 }
 

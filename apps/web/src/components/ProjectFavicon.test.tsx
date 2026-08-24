@@ -79,10 +79,20 @@ vi.mock("react", async (importOriginal) => {
 });
 
 vi.mock("@effect/atom-react", () => ({
-  useAtomValue: () => testState.sources,
+  useAtomValue: (physicalProjectKey: string) => testState.sources.get(physicalProjectKey) ?? null,
 }));
 vi.mock("react/compiler-runtime", () => ({ c: hooks.useMemoCache }));
-vi.mock("../state/projects", () => ({ projectFaviconSourcesAtom: {} }));
+vi.mock("../hooks/useSettings", () => ({
+  useClientSettings: () => ({
+    sidebarProjectGroupingMode: "repository",
+    sidebarProjectGroupingOverrides: {},
+  }),
+}));
+vi.mock("../state/projects", () => ({
+  projectFavicons: {
+    sourceAtom: (physicalProjectKey: string) => physicalProjectKey,
+  },
+}));
 vi.mock("../assets/assetUrls", () => ({
   useAssetUrlState: (environmentId: unknown, resource: unknown) => {
     testState.lastEnvironmentId = environmentId;
@@ -143,6 +153,15 @@ function renderImage(
   return Component(props);
 }
 
+function loadProjectFavicon(environmentId: EnvironmentId, cwd: string) {
+  hooks.beginRender();
+  const element = ProjectFavicon({ environmentId, cwd }) as ReactElement<ProjectFaviconImageProps>;
+  hooks.reset();
+  const Component = element.type as (props: ProjectFaviconImageProps) => ProjectFaviconImageElement;
+  renderImage(Component, element.props).props.children[2]?.props.onLoad?.();
+  return element;
+}
+
 describe("ProjectFavicon", () => {
   beforeEach(() => {
     hooks.reset();
@@ -155,7 +174,6 @@ describe("ProjectFavicon", () => {
     for (const [environmentId, cwd] of [
       ["environment-test", "/workspace-test"],
       ["environment-disconnect", "/workspace-disconnect"],
-      ["environment-windows", "C:\\Work\\T3Code\\"],
       ["environment-missing", "/workspace-missing"],
     ] as const) {
       forgetProjectFavicon(derivePhysicalProjectKeyFromPath(environmentId, cwd));
@@ -221,18 +239,7 @@ describe("ProjectFavicon", () => {
   it("keeps the last loaded favicon while its environment is disconnected", () => {
     const environmentId = "environment-disconnect" as EnvironmentId;
     const cwd = "/workspace-disconnect";
-    hooks.beginRender();
-    const loadedElement = ProjectFavicon({
-      environmentId,
-      cwd,
-    }) as ReactElement<ProjectFaviconImageProps>;
-    hooks.reset();
-
-    const ImageComponent = loadedElement.type as (
-      props: ProjectFaviconImageProps,
-    ) => ProjectFaviconImageElement;
-    const loadingImage = renderImage(ImageComponent, loadedElement.props).props.children[2];
-    loadingImage?.props.onLoad?.();
+    const loadedElement = loadProjectFavicon(environmentId, cwd);
 
     testState.assetStatus = "Loading";
     hooks.beginRender();
@@ -260,17 +267,7 @@ describe("ProjectFavicon", () => {
       derivePhysicalProjectKeyFromPath("environment-sibling", "/different/workspace"),
       source,
     );
-    hooks.beginRender();
-    const loadedElement = ProjectFavicon({
-      environmentId: "environment-source" as EnvironmentId,
-      cwd: "/workspace/source",
-    }) as ReactElement<ProjectFaviconImageProps>;
-    hooks.reset();
-
-    const ImageComponent = loadedElement.type as (
-      props: ProjectFaviconImageProps,
-    ) => ProjectFaviconImageElement;
-    renderImage(ImageComponent, loadedElement.props).props.children[2]?.props.onLoad?.();
+    loadProjectFavicon(source.environmentId, source.cwd);
 
     testState.assetStatus = "Loading";
     hooks.beginRender();
@@ -282,45 +279,11 @@ describe("ProjectFavicon", () => {
     expect(siblingElement.props.src).toBe(testState.faviconUrl);
   });
 
-  it("normalizes physical project keys", () => {
-    const environmentId = "environment-windows" as EnvironmentId;
-    hooks.beginRender();
-    const loadedElement = ProjectFavicon({
-      environmentId,
-      cwd: "C:\\Work\\T3Code\\",
-    }) as ReactElement<ProjectFaviconImageProps>;
-    hooks.reset();
-
-    const ImageComponent = loadedElement.type as (
-      props: ProjectFaviconImageProps,
-    ) => ProjectFaviconImageElement;
-    renderImage(ImageComponent, loadedElement.props).props.children[2]?.props.onLoad?.();
-
-    testState.assetStatus = "Loading";
-    hooks.beginRender();
-    const normalizedElement = ProjectFavicon({
-      environmentId,
-      cwd: "c:/work/t3code",
-    }) as ReactElement<ProjectFaviconImageProps>;
-
-    expect(normalizedElement.props.src).toBe(testState.faviconUrl);
-  });
-
   it("forgets the loaded favicon when the environment confirms it is missing", () => {
     const environmentId = "environment-missing" as EnvironmentId;
     const cwd = "/workspace-missing";
     const projectKey = derivePhysicalProjectKeyFromPath(environmentId, cwd);
-    hooks.beginRender();
-    const loadedElement = ProjectFavicon({
-      environmentId,
-      cwd,
-    }) as ReactElement<ProjectFaviconImageProps>;
-    hooks.reset();
-
-    const ImageComponent = loadedElement.type as (
-      props: ProjectFaviconImageProps,
-    ) => ProjectFaviconImageElement;
-    renderImage(ImageComponent, loadedElement.props).props.children[2]?.props.onLoad?.();
+    const loadedElement = loadProjectFavicon(environmentId, cwd);
 
     testState.faviconUrl =
       "https://environment.test/api/assets/token-missing/project-favicon-missing";

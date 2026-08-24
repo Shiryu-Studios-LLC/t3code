@@ -16,8 +16,9 @@ import {
   isProjectFaviconFallbackUrl,
 } from "@t3tools/shared/projectFavicon";
 import { useThemeColor } from "../lib/useThemeColor";
-import { useAssetUrl } from "../state/assets";
-import { projectFaviconSourcesAtom } from "../state/projects";
+import { useAssetUrlState } from "../state/assets";
+import { useMobileProjectGroupingSettings } from "../state/project-grouping";
+import { projectFavicons } from "../state/projects";
 import {
   beginProjectFaviconRequest,
   createProjectFaviconRequest,
@@ -38,14 +39,15 @@ export function ProjectFavicon(props: {
   const physicalProjectKey = props.workspaceRoot
     ? derivePhysicalProjectKeyFromPath(props.environmentId, props.workspaceRoot)
     : null;
-  const projectFaviconSources = useAtomValue(projectFaviconSourcesAtom);
-  const source =
-    physicalProjectKey === null ? undefined : projectFaviconSources.get(physicalProjectKey);
+  const groupingSettings = useMobileProjectGroupingSettings();
+  const source = useAtomValue(
+    projectFavicons.sourceAtom(physicalProjectKey ?? "", groupingSettings),
+  );
   const projectKey = source?.projectKey ?? physicalProjectKey;
   const environmentId = source?.environmentId ?? props.environmentId;
   const workspaceRoot = source?.cwd ?? props.workspaceRoot;
   const faviconPath = source ? source.faviconPath : props.faviconPath;
-  const faviconUrl = useAssetUrl(
+  const faviconState = useAssetUrlState(
     environmentId,
     workspaceRoot === null || workspaceRoot === undefined
       ? null
@@ -55,7 +57,9 @@ export function ProjectFavicon(props: {
           ...(faviconPath ? { path: faviconPath } : {}),
         },
   );
-  const faviconIsMissing = isProjectFaviconFallbackUrl(faviconUrl);
+  const faviconUrl = faviconState._tag === "Success" ? faviconState.url : null;
+  const faviconIsMissing =
+    faviconState._tag === "Success" && isProjectFaviconFallbackUrl(faviconState.url);
   const subscribe = useCallback(
     (listener: () => void) =>
       projectKey === null ? () => {} : subscribeProjectFavicons(projectKey, listener),
