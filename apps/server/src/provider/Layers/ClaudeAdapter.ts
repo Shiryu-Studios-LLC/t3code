@@ -543,6 +543,7 @@ function makeClaudeTokenUsageSnapshot(input: {
   readonly totalProcessedTokens?: number;
   readonly lastUsedTokens?: number;
   readonly compactsAutomatically?: boolean;
+  readonly autoCompactThreshold?: number;
 }): ThreadTokenUsageSnapshot | undefined {
   const activeTokens = finiteNonNegativeInteger(input.activeTokens);
   if (activeTokens === undefined || activeTokens <= 0) {
@@ -569,6 +570,9 @@ function makeClaudeTokenUsageSnapshot(input: {
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(input.compactsAutomatically !== undefined
       ? { compactsAutomatically: input.compactsAutomatically }
+      : {}),
+    ...(input.autoCompactThreshold !== undefined
+      ? { autoCompactThreshold: input.autoCompactThreshold }
       : {}),
   };
 }
@@ -604,11 +608,13 @@ function normalizeClaudeContextUsageApiSnapshot(
   value: SDKControlGetContextUsageResponse,
   totalProcessedTokens?: number,
 ): ThreadTokenUsageSnapshot | undefined {
+  const autoCompactThreshold = finitePositiveInteger(value.autoCompactThreshold);
   return makeClaudeTokenUsageSnapshot({
     activeTokens: value.totalTokens,
     contextWindow: value.maxTokens,
     ...(totalProcessedTokens !== undefined ? { totalProcessedTokens } : {}),
     compactsAutomatically: value.isAutoCompactEnabled,
+    ...(autoCompactThreshold !== undefined ? { autoCompactThreshold } : {}),
   });
 }
 
@@ -4001,6 +4007,76 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         } satisfies PermissionResult;
       });
 
+      const handleResumeDialog = Effect.fn("handleResumeDialog")(function* (
+        request: Parameters<NonNullable<ClaudeQueryOptions["onUserDialog"]>>[0],
+        callbackOptions: Parameters<NonNullable<ClaudeQueryOptions["onUserDialog"]>>[1],
+      ) {
+        if (request.dialogKind !== "resume_return") {
+          return { behavior: "cancelled" as const };
+        }
+
+        const context = yield* Ref.get(contextRef);
+        if (!context) {
+          return { behavior: "cancelled" as const };
+        }
+
+        const estimatedTokens = finiteNonNegativeInteger(request.payload.estimatedTokens) ?? 0;
+        const ageMinutes = finiteNonNegativeInteger(request.payload.sessionAgeMinutes) ?? 0;
+        const ageLabel =
+          ageMinutes >= 60
+            ? `${Math.floor(ageMinutes / 60)}h ${ageMinutes % 60}m`
+            : `${ageMinutes}m`;
+        const question = `This session is ${ageLabel} old and uses ${estimatedTokens.toLocaleString("en-US")} tokens. Compact it before continuing?`;
+        const result = yield* handleAskUserQuestion(
+          context,
+          {
+            questions: [
+              {
+                header: "Resume session",
+                question,
+                options: [
+                  {
+                    label: "Compact and continue",
+                    description: "Resume with a summary and use fewer tokens.",
+                  },
+                  {
+                    label: "Keep full history",
+                    description: "Resume without changing the conversation.",
+                  },
+                  {
+                    label: "Don't ask again",
+                    description: "Keep full history and skip future resume prompts.",
+                  },
+                ],
+                multiSelect: false,
+              },
+            ],
+          },
+          {
+            signal: callbackOptions.signal,
+            ...(request.toolUseID ? { toolUseID: request.toolUseID } : {}),
+          },
+        );
+
+        if (result.behavior !== "allow") {
+          return { behavior: "cancelled" as const };
+        }
+
+        const answers = result.updatedInput.answers;
+        const selection =
+          answers && typeof answers === "object" && !Array.isArray(answers)
+            ? (answers as Record<string, unknown>)[question]
+            : undefined;
+        const action =
+          selection === "Compact and continue"
+            ? "compact"
+            : selection === "Don't ask again"
+              ? "never"
+              : "continue";
+
+        return { behavior: "completed" as const, result: action };
+      });
+
       const canUseToolEffect = Effect.fn("canUseTool")(function* (
         toolName: Parameters<CanUseTool>[0],
         toolInput: Parameters<CanUseTool>[1],
@@ -4161,6 +4237,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
         runPromise(canUseToolEffect(toolName, toolInput, callbackOptions));
+      const onUserDialog: NonNullable<ClaudeQueryOptions["onUserDialog"]> = (
+        request,
+        callbackOptions,
+      ) => runPromise(handleResumeDialog(request, callbackOptions));
 
       const claudeBinaryPath = claudeSdkExecutablePath;
       const extraArgs = parseCliArgs(claudeSettings.launchArgs).flags;
@@ -4196,6 +4276,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
         ...(fastMode ? { fastMode: true } : {}),
         ...(ultracode ? { ultracode: true } : {}),
+        ...(claudeSettings.autoCompactWindow
+          ? { autoCompactWindow: Number(claudeSettings.autoCompactWindow) }
+          : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
       // The attachments dir grant lets the agent Read/copy pasted images at
@@ -4228,6 +4311,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(newSessionId ? { sessionId: newSessionId } : {}),
         includePartialMessages: true,
         canUseTool,
+        onUserDialog,
+        supportedDialogKinds: ["resume_return"],
         env: claudeEnvironment,
         additionalDirectories,
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),

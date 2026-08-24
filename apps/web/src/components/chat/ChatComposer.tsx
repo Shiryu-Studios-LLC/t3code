@@ -122,7 +122,12 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import { ContextWindowMeter } from "./ContextWindowMeter";
-import { resolveContextWindowModelDisplayName } from "./ContextWindowMeter.logic";
+import {
+  resolveContextWindowModelDisplayName,
+  shouldOfferResumeCompaction,
+} from "./ContextWindowMeter.logic";
+import { formatContextWindowTokens } from "~/lib/contextWindow";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
@@ -457,6 +462,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
+  onCompactContext?: (() => void) | undefined;
 }) {
   return (
     <>
@@ -464,6 +470,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         <ContextWindowMeter
           usage={props.activeContextWindow}
           modelDisplayName={props.activeThreadModelDisplayName}
+          onCompact={props.onCompactContext}
+          compactDisabled={props.isRunning || props.isSendBusy || props.isConnecting}
         />
       ) : null}
       {props.isPreparingWorktree ? (
@@ -1008,6 +1016,25 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => resolveContextWindowModelDisplayName(activeThreadModelSelection, modelOptionsByInstance),
     [activeThreadModelSelection, modelOptionsByInstance],
   );
+  const nowMinute = useNowMinute();
+  const resumeCompactionNoticeKey =
+    activeThreadId && activeContextWindow
+      ? `${activeThreadId}:${activeContextWindow.updatedAt}`
+      : null;
+  const [dismissedResumeCompactionNoticeKey, setDismissedResumeCompactionNoticeKey] = useState<
+    string | null
+  >(null);
+  const showResumeCompactionNotice =
+    phase !== "running" &&
+    pendingUserInputs.length === 0 &&
+    resumeCompactionNoticeKey !== null &&
+    dismissedResumeCompactionNoticeKey !== resumeCompactionNoticeKey &&
+    shouldOfferResumeCompaction({
+      provider: selectedProvider,
+      usedTokens: activeContextWindow?.usedTokens,
+      updatedAt: activeContextWindow?.updatedAt,
+      now: `${nowMinute}:00.000Z`,
+    });
 
   // ------------------------------------------------------------------
   // Composer-local state
@@ -1982,6 +2009,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       shouldBlurMobileComposerOnSubmit,
     ],
   );
+  const compactThreadContext = useCallback(() => {
+    if (phase === "running" || isSendBusy || isConnecting || !activeThreadId) {
+      return;
+    }
+
+    if (resumeCompactionNoticeKey) {
+      setDismissedResumeCompactionNoticeKey(resumeCompactionNoticeKey);
+    }
+    promptRef.current = "/compact";
+    setComposerDraftPrompt(composerDraftTarget, "/compact");
+    onSend();
+  }, [
+    activeThreadId,
+    composerDraftTarget,
+    isConnecting,
+    isSendBusy,
+    onSend,
+    phase,
+    promptRef,
+    resumeCompactionNoticeKey,
+    setComposerDraftPrompt,
+  ]);
   const expandMobileComposer = useCallback(() => {
     if (composerBlurFrameRef.current !== null) {
       window.cancelAnimationFrame(composerBlurFrameRef.current);
@@ -2899,6 +2948,32 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       className={cn("mx-auto w-full min-w-0 max-w-3xl", hasShoulderTab && "pt-7")}
       data-chat-composer-form="true"
     >
+      {showResumeCompactionNotice && activeContextWindow ? (
+        <div
+          className="mb-2 flex items-start justify-between gap-3 border-l-2 border-primary/60 px-3 py-2"
+          data-chat-composer-compaction-notice="true"
+        >
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-foreground">Resume with less context</div>
+            <div className="text-xs text-muted-foreground">
+              {formatContextWindowTokens(activeContextWindow.usedTokens)} tokens from an older
+              session
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              size="xs"
+              variant="ghost-muted"
+              onClick={() => setDismissedResumeCompactionNoticeKey(resumeCompactionNoticeKey)}
+            >
+              Keep
+            </Button>
+            <Button size="xs" onClick={compactThreadContext}>
+              Compact
+            </Button>
+          </div>
+        </div>
+      ) : null}
       {showComposerTopDrawer && (!isTasksDrawerOpen || hasBlockingComposerTopDrawer) ? (
         <div
           className="chat-composer-top-drawer"
@@ -3507,6 +3582,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
                     onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
+                    {...(selectedProvider === "claudeAgent"
+                      ? { onCompactContext: compactThreadContext }
+                      : {})}
                   />
                 </div>
               </div>

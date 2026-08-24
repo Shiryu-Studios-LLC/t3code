@@ -5,6 +5,7 @@ import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
+  ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
   defaultEnabledForDriver,
   resolveProviderInstanceEnabled,
@@ -17,6 +18,27 @@ const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+
+describe("ClaudeSettings auto-compaction", () => {
+  it("uses Claude's default threshold when no override is configured", () => {
+    expect(decodeClaudeSettings({}).autoCompactWindow).toBe("");
+  });
+
+  it.each(["100000", "300000", "1000000"])(
+    "accepts a supported auto-compaction threshold: %s",
+    (value) => {
+      expect(decodeClaudeSettings({ autoCompactWindow: value }).autoCompactWindow).toBe(value);
+    },
+  );
+
+  it.each(["99999", "1000001", "300k", "invalid"])(
+    "rejects an unsupported auto-compaction threshold: %s",
+    (value) => {
+      expect(() => decodeClaudeSettings({ autoCompactWindow: value })).toThrow();
+    },
+  );
+});
 
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {

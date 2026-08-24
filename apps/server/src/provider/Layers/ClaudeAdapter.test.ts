@@ -413,6 +413,25 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("passes the configured auto-compaction window to Claude", () => {
+    const harness = makeHarness({ claudeConfig: { autoCompactWindow: "300000" } });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.deepEqual(options?.settings, { autoCompactWindow: 300000 });
+      assert.deepEqual(options?.supportedDialogKinds, ["resume_return"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards claude effort levels into query options", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -4393,6 +4412,62 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(proposedEvent.value.payload.planMarkdown, "# Final plan\n\n- capture it");
       assert.deepEqual(proposedEvent.value.providerRefs, {
         providerItemId: ProviderItemId.make("tool-exit-2"),
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("routes Claude resume compaction through the shared user-input UI", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        resumeCursor: { resume: "550e8400-e29b-41d4-a716-446655440000" },
+        runtimeMode: "full-access",
+      });
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      const onUserDialog = harness.getLastCreateQueryInput()?.options.onUserDialog;
+      assert.equal(typeof onUserDialog, "function");
+      if (!onUserDialog) return;
+
+      const dialogPromise = onUserDialog(
+        {
+          dialogKind: "resume_return",
+          payload: { sessionAgeMinutes: 145, estimatedTokens: 275123 },
+        },
+        { signal: new AbortController().signal },
+      );
+
+      const requested = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(requested._tag, "Some");
+      if (requested._tag !== "Some" || requested.value.type !== "user-input.requested") return;
+      const question = requested.value.payload.questions[0];
+      assert.equal(question?.header, "Resume session");
+      assert.match(question?.question ?? "", /2h 25m/);
+      assert.match(question?.question ?? "", /275,123 tokens/);
+      assert.deepEqual(
+        question?.options.map((option) => option.label),
+        ["Compact and continue", "Keep full history", "Don't ask again"],
+      );
+      if (!question || !requested.value.requestId) return;
+
+      yield* adapter.respondToUserInput(
+        session.threadId,
+        ApprovalRequestId.make(requested.value.requestId),
+        { [question.id]: "Compact and continue" },
+      );
+
+      const resolved = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(resolved._tag, "Some");
+      if (resolved._tag === "Some") assert.equal(resolved.value.type, "user-input.resolved");
+      assert.deepEqual(yield* Effect.promise(() => dialogPromise), {
+        behavior: "completed",
+        result: "compact",
       });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

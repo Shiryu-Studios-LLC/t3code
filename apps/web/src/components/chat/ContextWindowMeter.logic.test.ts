@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   formatContextWindowCompactionMessage,
   resolveContextWindowModelDisplayName,
+  shouldOfferResumeCompaction,
 } from "./ContextWindowMeter.logic";
 
 describe("resolveContextWindowModelDisplayName", () => {
@@ -54,5 +55,56 @@ describe("formatContextWindowCompactionMessage", () => {
     expect(formatContextWindowCompactionMessage(null)).toBe(
       "Context compacts automatically when needed.",
     );
+  });
+
+  it("shows the configured auto-compaction threshold", () => {
+    expect(formatContextWindowCompactionMessage("Claude Sonnet 5", 300_000)).toBe(
+      "Compacts automatically at 300,000 tokens.",
+    );
+  });
+});
+
+describe("shouldOfferResumeCompaction", () => {
+  const now = "2026-08-24T12:00:00.000Z";
+
+  it("matches Claude's old-session age and context thresholds", () => {
+    expect(
+      shouldOfferResumeCompaction({
+        provider: "claudeAgent",
+        usedTokens: 100_000,
+        updatedAt: "2026-08-24T10:50:00.000Z",
+        now,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not prompt for recent or smaller sessions", () => {
+    expect(
+      shouldOfferResumeCompaction({
+        provider: "claudeAgent",
+        usedTokens: 99_999,
+        updatedAt: "2026-08-24T10:00:00.000Z",
+        now,
+      }),
+    ).toBe(false);
+    expect(
+      shouldOfferResumeCompaction({
+        provider: "claudeAgent",
+        usedTokens: 200_000,
+        updatedAt: "2026-08-24T10:51:00.000Z",
+        now,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not show Claude's resume prompt for another provider", () => {
+    expect(
+      shouldOfferResumeCompaction({
+        provider: "codex",
+        usedTokens: 300_000,
+        updatedAt: "2026-08-24T09:00:00.000Z",
+        now,
+      }),
+    ).toBe(false);
   });
 });
