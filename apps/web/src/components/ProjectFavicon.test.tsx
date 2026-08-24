@@ -2,12 +2,26 @@ import type { ComponentType, Dispatch, EffectCallback, ReactElement, SetStateAct
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentId } from "@t3tools/contracts";
 
+class StubImage {
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  src = "";
+  constructor() {
+    testState.images.push(this);
+  }
+}
+
 const testState = vi.hoisted(() => ({
   faviconUrl: "https://environment.test/api/assets/token-a/v1-20-favicon.svg",
   assetStatus: "Success" as "Failure" | "Loading" | "Success",
   lastEnvironmentId: null as unknown,
   lastResource: null as unknown,
   accountId: null as string | null,
+  images: [] as Array<{
+    onload: (() => void) | null;
+    onerror: (() => void) | null;
+    src: string;
+  }>,
   rejectedSourceKeys: new Set<string>() as ReadonlySet<string>,
   sources: new Map<
     string,
@@ -25,6 +39,7 @@ const hooks = vi.hoisted(() => {
   let cursor = 0;
   let slots: unknown[] = [];
   let effects: EffectCallback[] = [];
+  let cleanups: Array<() => void> = [];
   const nextIndex = () => cursor++;
 
   return {
@@ -35,11 +50,18 @@ const hooks = vi.hoisted(() => {
       cursor = 0;
       slots = [];
       effects = [];
+      cleanups = [];
     },
     commitEffects() {
+      const pendingCleanups = cleanups;
+      cleanups = [];
+      for (const cleanup of pendingCleanups) cleanup();
       const pendingEffects = effects;
       effects = [];
-      for (const effect of pendingEffects) effect();
+      for (const effect of pendingEffects) {
+        const cleanup = effect();
+        if (typeof cleanup === "function") cleanups.push(cleanup);
+      }
     },
     useMemoCache(size: number): unknown[] {
       const index = nextIndex();
@@ -72,6 +94,7 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...actual,
     useCallback: <T,>(callback: T) => callback,
+    useEffect: hooks.useEffect,
     useLayoutEffect: hooks.useEffect,
     useState: hooks.useState,
     useSyncExternalStore: (
@@ -115,6 +138,8 @@ vi.mock("../assets/assetUrls", () => ({
   },
 }));
 
+vi.stubGlobal("Image", StubImage);
+
 import {
   forgetProjectFavicon,
   getLoadedProjectFavicon,
@@ -137,7 +162,7 @@ type ImageElement = ReactElement<{
 }>;
 
 type ProjectFaviconImageElement = ReactElement<{
-  readonly children: [ReactElement | null, ImageElement | null, ImageElement | null];
+  readonly children: [ReactElement | null, ImageElement | null];
 }>;
 
 function resolveImageComponent(): {
@@ -165,12 +190,20 @@ function renderImage(
   return Component(props);
 }
 
+function latestImage() {
+  const image = testState.images.at(-1);
+  if (!image) throw new Error("no preload image was created");
+  return image;
+}
+
 function loadProjectFavicon(environmentId: EnvironmentId, cwd: string) {
   hooks.beginRender();
   const element = ProjectFavicon({ environmentId, cwd }) as ReactElement<ProjectFaviconImageProps>;
   hooks.reset();
   const Component = element.type as (props: ProjectFaviconImageProps) => ProjectFaviconImageElement;
-  renderImage(Component, element.props).props.children[2]?.props.onLoad?.();
+  renderImage(Component, element.props);
+  hooks.commitEffects();
+  latestImage().onload?.();
   return element;
 }
 
@@ -182,6 +215,7 @@ describe("ProjectFavicon", () => {
     testState.lastEnvironmentId = null;
     testState.lastResource = null;
     testState.accountId = null;
+    testState.images.length = 0;
     testState.rejectedSourceKeys = new Set();
     testState.sources.clear();
     forgetProjectFavicon("repository:pingdotgg/t3code");
@@ -196,8 +230,9 @@ describe("ProjectFavicon", () => {
 
   it("falls back when the displayed favicon fails without discarding a valid older image early", () => {
     const { Component, props } = resolveImageComponent();
-    const initialLoadingImage = renderImage(Component, props).props.children[2];
-    initialLoadingImage?.props.onLoad?.();
+    renderImage(Component, props);
+    hooks.commitEffects();
+    latestImage().onload?.();
 
     const refreshedProps = {
       ...props,
@@ -205,7 +240,8 @@ describe("ProjectFavicon", () => {
     };
     const refreshing = renderImage(Component, refreshedProps).props.children;
     expect(refreshing[1]?.props.src).toBe(props.src);
-    refreshing[2]?.props.onError?.();
+    hooks.commitEffects();
+    latestImage().onerror?.();
 
     const afterRefreshError = renderImage(Component, refreshedProps).props.children;
     expect(afterRefreshError[1]?.props.src).toBe(props.src);
@@ -214,6 +250,27 @@ describe("ProjectFavicon", () => {
     const afterDisplayedError = renderImage(Component, refreshedProps).props.children;
     expect(afterDisplayedError[0]).not.toBeNull();
     expect(afterDisplayedError[1]).toBeNull();
+  });
+
+  it("ignores a superseded preload result instead of poisoning the group cache", () => {
+    const { Component, props } = resolveImageComponent();
+    renderImage(Component, props);
+    hooks.commitEffects();
+    const staleImage = latestImage();
+
+    const refreshedProps = {
+      ...props,
+      src: "https://environment.test/api/assets/token-b/v1-20-favicon.svg",
+    };
+    renderImage(Component, refreshedProps);
+    hooks.commitEffects();
+    const currentImage = latestImage();
+
+    staleImage.onload?.();
+    expect(getLoadedProjectFavicon(props.projectKey)).toBeNull();
+
+    currentImage.onload?.();
+    expect(getLoadedProjectFavicon(props.projectKey)?.src).toBe(refreshedProps.src);
   });
 
   it("requests a saved favicon path when one is set", () => {

@@ -13,7 +13,7 @@ import {
 } from "@t3tools/shared/projectFavicon";
 import { FolderIcon } from "lucide-react";
 import type { ComponentType } from "react";
-import { useCallback, useLayoutEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { useAssetUrlState } from "../assets/assetUrls";
 import { derivePhysicalProjectKeyFromPath } from "../logicalProject";
 import { projectFavicons } from "../state/projects";
@@ -130,6 +130,30 @@ function ProjectFaviconImage({
     setDisplayedSrc((currentSrc) => (currentSrc === failedSrc ? null : currentSrc));
   };
 
+  // Preload through a dedicated Image per request. The component stays mounted
+  // across src changes, so a superseded request must not write into the shared
+  // group cache; cancellation ties each load result to the src that started it.
+  useEffect(() => {
+    if (!isLoading) return;
+
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (cancelled) return;
+      rememberProjectFavicon(projectKey, { cacheKey, src });
+      setDisplayedSrc(src);
+    };
+    image.onerror = () => {
+      if (cancelled) return;
+      forgetProjectFavicon(projectKey, src);
+      setDisplayedSrc((currentSrc) => (currentSrc === src ? null : currentSrc));
+    };
+    image.src = src;
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoading, projectKey, cacheKey, src]);
+
   return (
     <>
       {displayedSrc === null ? (
@@ -141,18 +165,6 @@ function ProjectFaviconImage({
           alt=""
           className={cn("size-3.5 shrink-0 rounded-sm object-contain", className)}
           onError={() => handleLoadError(displayedSrc)}
-        />
-      ) : null}
-      {isLoading ? (
-        <img
-          src={src}
-          alt=""
-          className="hidden"
-          onLoad={() => {
-            rememberProjectFavicon(projectKey, { cacheKey, src });
-            setDisplayedSrc(src);
-          }}
-          onError={() => handleLoadError(src)}
         />
       ) : null}
     </>
