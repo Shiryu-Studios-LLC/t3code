@@ -3,6 +3,7 @@ import {
   getLoadedProjectFavicon,
   getProjectFaviconGeneration,
   rememberProjectFavicon,
+  subscribeProjectFavicons,
 } from "@t3tools/client-runtime/state/project-favicon";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -48,6 +49,10 @@ describe("managed relay authentication", () => {
       cacheKey: "account-icon",
       src: "/icons/account.svg",
     });
+    const sessionsWhenIconsChange: unknown[] = [];
+    const unsubscribe = subscribeProjectFavicons("account-project", () => {
+      sessionsWhenIconsChange.push(appAtomRegistry.get(managedRelaySessionAtom));
+    });
     expect(appAtomRegistry.get(managedRelaySessionAtom)?.accountId).toBe("account-1");
     expect(await readManagedRelayClerkToken()).toBe("account-1-token");
 
@@ -56,7 +61,9 @@ describe("managed relay authentication", () => {
 
     expect(appAtomRegistry.get(managedRelaySessionAtom)).toBeNull();
     expect(getLoadedProjectFavicon("account-project")).toBeNull();
+    expect(sessionsWhenIconsChange).toEqual([null]);
     expect(await readManagedRelayClerkToken()).toBeNull();
+    unsubscribe();
     await cleanup;
   });
 

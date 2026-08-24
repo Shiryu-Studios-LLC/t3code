@@ -3,6 +3,7 @@ import {
   getLoadedProjectFavicon,
   getProjectFaviconGeneration,
   rememberProjectFavicon,
+  subscribeProjectFavicons,
 } from "@t3tools/client-runtime/state/project-favicon";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -65,6 +66,10 @@ describe("CloudAuthProvider relay account isolation", () => {
       cacheKey: "account-icon",
       src: "/icons/account.svg",
     });
+    const sessionsWhenIconsChange: unknown[] = [];
+    const unsubscribe = subscribeProjectFavicons("account-project", () => {
+      sessionsWhenIconsChange.push(appAtomRegistry.get(managedRelaySessionAtom));
+    });
     expect(appAtomRegistry.get(managedRelaySessionAtom)?.accountId).toBe("account-1");
 
     deactivateCloudRelayAccount();
@@ -72,7 +77,9 @@ describe("CloudAuthProvider relay account isolation", () => {
 
     expect(appAtomRegistry.get(managedRelaySessionAtom)).toBeNull();
     expect(getLoadedProjectFavicon("account-project")).toBeNull();
+    expect(sessionsWhenIconsChange).toEqual([null]);
     expect(vi.mocked(setAgentAwarenessRelayTokenProvider)).toHaveBeenLastCalledWith(null);
+    unsubscribe();
     await cleanup;
   });
 });

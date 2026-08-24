@@ -36,10 +36,9 @@ function resetManagedRelayTokenCache() {
 
 export function deactivateCloudRelayAccount(): void {
   setAgentAwarenessRelayTokenProvider(null);
-  if (appAtomRegistry.get(managedRelaySessionAtom) !== null) {
-    clearProjectFavicons();
-  }
+  const hadActiveAccount = appAtomRegistry.get(managedRelaySessionAtom) !== null;
   setManagedRelaySession(appAtomRegistry, null);
+  if (hadActiveAccount) clearProjectFavicons();
 }
 
 export function activateCloudRelayAccount(

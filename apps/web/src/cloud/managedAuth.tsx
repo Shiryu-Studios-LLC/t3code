@@ -27,10 +27,9 @@ export async function readManagedRelayClerkToken(): Promise<string | null> {
 
 export function deactivateManagedRelayAuthentication(): void {
   relayTokenProvider = null;
-  if (appAtomRegistry.get(managedRelaySessionAtom) !== null) {
-    clearProjectFavicons();
-  }
+  const hadActiveAccount = appAtomRegistry.get(managedRelaySessionAtom) !== null;
   setManagedRelaySession(appAtomRegistry, null);
+  if (hadActiveAccount) clearProjectFavicons();
 }
 
 export function activateManagedRelayAuthentication(
