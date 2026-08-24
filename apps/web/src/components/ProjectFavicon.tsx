@@ -12,10 +12,9 @@ import {
 } from "@t3tools/shared/projectFavicon";
 import { FolderIcon } from "lucide-react";
 import type { ComponentType } from "react";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { useAssetUrlState } from "../assets/assetUrls";
-import { useClientSettings } from "../hooks/useSettings";
-import { derivePhysicalProjectKeyFromPath, selectProjectGroupingSettings } from "../logicalProject";
+import { derivePhysicalProjectKeyFromPath } from "../logicalProject";
 import { projectFavicons } from "../state/projects";
 import { cn } from "~/lib/utils";
 
@@ -27,9 +26,7 @@ export function ProjectFavicon(input: {
   fallbackIcon?: ComponentType<{ className?: string }>;
 }) {
   const physicalProjectKey = derivePhysicalProjectKeyFromPath(input.environmentId, input.cwd);
-  const groupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const source = useAtomValue(projectFavicons.sourceAtom(physicalProjectKey, groupingSettings));
-  const projectKey = source?.projectKey ?? physicalProjectKey;
+  const { projectKey, source } = useAtomValue(projectFavicons.sourceAtom(physicalProjectKey));
   const loadedFavicon = useSyncExternalStore(
     useCallback((listener) => subscribeProjectFavicons(projectKey, listener), [projectKey]),
     useCallback(() => getLoadedProjectFavicon(projectKey), [projectKey]),
@@ -37,10 +34,19 @@ export function ProjectFavicon(input: {
   const state = useProjectFaviconAsset(source ?? input);
   const FallbackIcon = input.fallbackIcon ?? FolderIcon;
   const faviconIsMissing = state._tag === "Success" && isProjectFaviconFallbackUrl(state.url);
+  const missingLoadedSource =
+    faviconIsMissing &&
+    loadedFavicon !== null &&
+    loadedFavicon.cacheKey ===
+      getProjectFaviconCacheKey(
+        source?.environmentId ?? input.environmentId,
+        source?.cwd ?? input.cwd,
+        loadedFavicon.src,
+      );
 
-  useEffect(() => {
-    if (faviconIsMissing) forgetProjectFavicon(projectKey);
-  }, [faviconIsMissing, projectKey]);
+  useLayoutEffect(() => {
+    if (missingLoadedSource) forgetProjectFavicon(projectKey);
+  }, [missingLoadedSource, projectKey]);
 
   const favicon =
     state._tag === "Success" && !faviconIsMissing
@@ -52,7 +58,7 @@ export function ProjectFavicon(input: {
           ),
           src: state.url,
         }
-      : faviconIsMissing
+      : missingLoadedSource
         ? null
         : (loadedFavicon ?? null);
 

@@ -7,6 +7,7 @@ const testState = vi.hoisted(() => ({
   assetStatus: "Success" as "Failure" | "Loading" | "Success",
   lastEnvironmentId: null as unknown,
   lastResource: null as unknown,
+  accountId: null as string | null,
   sources: new Map<
     string,
     {
@@ -69,7 +70,7 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...actual,
     useCallback: <T,>(callback: T) => callback,
-    useEffect: hooks.useEffect,
+    useLayoutEffect: hooks.useEffect,
     useState: hooks.useState,
     useSyncExternalStore: (
       _subscribe: (listener: () => void) => () => void,
@@ -79,15 +80,17 @@ vi.mock("react", async (importOriginal) => {
 });
 
 vi.mock("@effect/atom-react", () => ({
-  useAtomValue: (physicalProjectKey: string) => testState.sources.get(physicalProjectKey) ?? null,
+  useAtomValue: (physicalProjectKey: string) => {
+    const source = testState.sources.get(physicalProjectKey) ?? null;
+    return {
+      source,
+      projectKey:
+        source?.projectKey ??
+        (testState.accountId ? `${testState.accountId}:${physicalProjectKey}` : physicalProjectKey),
+    };
+  },
 }));
 vi.mock("react/compiler-runtime", () => ({ c: hooks.useMemoCache }));
-vi.mock("../hooks/useSettings", () => ({
-  useClientSettings: () => ({
-    sidebarProjectGroupingMode: "repository",
-    sidebarProjectGroupingOverrides: {},
-  }),
-}));
 vi.mock("../state/projects", () => ({
   projectFavicons: {
     sourceAtom: (physicalProjectKey: string) => physicalProjectKey,
@@ -169,6 +172,7 @@ describe("ProjectFavicon", () => {
     testState.faviconUrl = "https://environment.test/api/assets/token-a/v1-20-favicon.svg";
     testState.lastEnvironmentId = null;
     testState.lastResource = null;
+    testState.accountId = null;
     testState.sources.clear();
     forgetProjectFavicon("repository:pingdotgg/t3code");
     for (const [environmentId, cwd] of [
@@ -236,6 +240,18 @@ describe("ProjectFavicon", () => {
     });
   });
 
+  it("keeps fallback project keys scoped to the current account", () => {
+    testState.accountId = "account-current";
+    hooks.beginRender();
+
+    const element = ProjectFavicon({
+      environmentId: "environment-test" as EnvironmentId,
+      cwd: "/workspace-test",
+    }) as ReactElement<ProjectFaviconImageProps>;
+
+    expect(element.props.projectKey).toBe("account-current:environment-test:/workspace-test");
+  });
+
   it("keeps the last loaded favicon while its environment is disconnected", () => {
     const environmentId = "environment-disconnect" as EnvironmentId;
     const cwd = "/workspace-disconnect";
@@ -301,5 +317,35 @@ describe("ProjectFavicon", () => {
 
     expect(disconnectedElement.type).toBe(missingElement.type);
     expect(disconnectedElement.type).not.toBe(loadedElement.type);
+  });
+
+  it("keeps a loaded icon when a different group source has no favicon", () => {
+    const projectKey = "repository:pingdotgg/t3code";
+    const first = {
+      projectKey,
+      environmentId: "environment-source" as EnvironmentId,
+      cwd: "/workspace/source",
+    };
+    const physicalProjectKey = derivePhysicalProjectKeyFromPath(first.environmentId, first.cwd);
+    testState.sources.set(physicalProjectKey, first);
+    const loadedElement = loadProjectFavicon(first.environmentId, first.cwd);
+
+    testState.sources.set(physicalProjectKey, {
+      projectKey,
+      environmentId: "environment-other" as EnvironmentId,
+      cwd: "/workspace/other",
+    });
+    testState.faviconUrl =
+      "https://environment.test/api/assets/token-missing/project-favicon-missing";
+    hooks.beginRender();
+
+    const fallbackElement = ProjectFavicon({
+      environmentId: first.environmentId,
+      cwd: first.cwd,
+    }) as ReactElement<ProjectFaviconImageProps>;
+
+    expect(fallbackElement.props.src).toBe(loadedElement.props.src);
+    hooks.commitEffects();
+    expect(getLoadedProjectFavicon(projectKey)?.src).toBe(loadedElement.props.src);
   });
 });

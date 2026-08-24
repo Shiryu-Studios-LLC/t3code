@@ -17,6 +17,11 @@ export interface ProjectFaviconSource {
   readonly faviconPath: string | null;
 }
 
+export interface ProjectFaviconSelection {
+  readonly projectKey: string;
+  readonly source: ProjectFaviconSource | null;
+}
+
 export interface LoadedProjectFavicon {
   readonly cacheKey: string;
   readonly src: string;
@@ -29,49 +34,43 @@ const MAX_LOADED_FAVICONS = 256;
 function shouldReplaceFaviconSource(
   current: EnvironmentProject,
   candidate: EnvironmentProject,
-  input: {
-    readonly connectedEnvironmentIds: ReadonlySet<EnvironmentId>;
-    readonly preferredEnvironmentId?: EnvironmentId | null;
-  },
+  connectedEnvironmentIds: ReadonlySet<EnvironmentId>,
 ): boolean {
-  const currentIsConnected = input.connectedEnvironmentIds.has(current.environmentId);
-  const candidateIsConnected = input.connectedEnvironmentIds.has(candidate.environmentId);
+  const currentIsConnected = connectedEnvironmentIds.has(current.environmentId);
+  const candidateIsConnected = connectedEnvironmentIds.has(candidate.environmentId);
   if (currentIsConnected !== candidateIsConnected) return candidateIsConnected;
 
   const currentHasOverride = current.faviconPath != null;
   const candidateHasOverride = candidate.faviconPath != null;
   if (currentHasOverride !== candidateHasOverride) return candidateHasOverride;
 
-  const currentIsPreferred = current.environmentId === input.preferredEnvironmentId;
-  const candidateIsPreferred = candidate.environmentId === input.preferredEnvironmentId;
-  if (currentIsPreferred !== candidateIsPreferred) return candidateIsPreferred;
-
   return derivePhysicalProjectKey(candidate) < derivePhysicalProjectKey(current);
+}
+
+function scopeProjectFaviconKey(projectKey: string, accountId: string | null): string {
+  return accountId ? `${accountId}:${projectKey}` : projectKey;
 }
 
 export function selectProjectFaviconSources(input: {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly settings: ProjectGroupingSettings;
   readonly connectedEnvironmentIds: ReadonlySet<EnvironmentId>;
-  readonly preferredEnvironmentId?: EnvironmentId | null;
   readonly accountId?: string | null;
 }): ReadonlyMap<string, ProjectFaviconSource> {
   const sources = new Map<string, ProjectFaviconSource>();
-  const groups = buildProjectGroups({
-    projects: input.projects,
-    settings: input.settings,
-    preferredEnvironmentId: input.preferredEnvironmentId ?? null,
-  });
+  const groups = buildProjectGroups({ projects: input.projects, settings: input.settings });
 
   for (const group of groups) {
     // Older duplicate records can contain an icon that the current record cleared.
     const source = group.members.reduce(
       (current, member) =>
-        shouldReplaceFaviconSource(current, member.project, input) ? member.project : current,
+        shouldReplaceFaviconSource(current, member.project, input.connectedEnvironmentIds)
+          ? member.project
+          : current,
       group.representative,
     );
     const faviconSource: ProjectFaviconSource = {
-      projectKey: input.accountId ? `${input.accountId}:${group.key}` : group.key,
+      projectKey: scopeProjectFaviconKey(group.key, input.accountId ?? null),
       environmentId: source.environmentId,
       cwd: source.workspaceRoot,
       faviconPath: source.faviconPath ?? null,
@@ -87,59 +86,54 @@ export function selectProjectFaviconSources(input: {
 
 export function createProjectFaviconSourceAtoms(input: {
   readonly projectsAtom: Atom.Atom<ReadonlyArray<EnvironmentProject>>;
+  readonly groupingSettingsAtom: Atom.Atom<ProjectGroupingSettings>;
   readonly preparedConnectionAtom: (
     environmentId: EnvironmentId,
   ) => Atom.Atom<Option.Option<PreparedConnection>>;
-  readonly preferredEnvironmentIdAtom?: Atom.Atom<EnvironmentId | null>;
   readonly accountSessionAtom: Atom.Atom<{ readonly accountId: string } | null>;
   readonly label: string;
 }) {
-  const sourceMapAtom = Atom.family((settingsKey: string) => {
-    const settings = JSON.parse(settingsKey) as ProjectGroupingSettings;
-    return Atom.make((get) => {
-      const projects = get(input.projectsAtom);
-      const connectedEnvironmentIds = new Set<EnvironmentId>();
-      for (const project of projects) {
-        if (Option.isSome(get(input.preparedConnectionAtom(project.environmentId)))) {
-          connectedEnvironmentIds.add(project.environmentId);
-        }
+  const sourceMapAtom = Atom.make((get) => {
+    const projects = get(input.projectsAtom);
+    const connectedEnvironmentIds = new Set<EnvironmentId>();
+    for (const project of projects) {
+      if (Option.isSome(get(input.preparedConnectionAtom(project.environmentId)))) {
+        connectedEnvironmentIds.add(project.environmentId);
       }
+    }
 
-      return selectProjectFaviconSources({
-        projects,
-        settings,
-        connectedEnvironmentIds,
-        preferredEnvironmentId: input.preferredEnvironmentIdAtom
-          ? get(input.preferredEnvironmentIdAtom)
-          : null,
-        accountId: get(input.accountSessionAtom)?.accountId ?? null,
-      });
-    }).pipe(Atom.withLabel(`${input.label}:sources`));
+    return selectProjectFaviconSources({
+      projects,
+      settings: get(input.groupingSettingsAtom),
+      connectedEnvironmentIds,
+      accountId: get(input.accountSessionAtom)?.accountId ?? null,
+    });
+  }).pipe(Atom.withLabel(`${input.label}:sources`));
+
+  const sourceAtom = Atom.family((physicalProjectKey: string) => {
+    let previous: ProjectFaviconSelection | null = null;
+    return Atom.make((get): ProjectFaviconSelection => {
+      const source = get(sourceMapAtom).get(physicalProjectKey) ?? null;
+      const projectKey =
+        source?.projectKey ??
+        scopeProjectFaviconKey(
+          physicalProjectKey,
+          get(input.accountSessionAtom)?.accountId ?? null,
+        );
+      if (
+        projectKey === previous?.projectKey &&
+        source?.environmentId === previous.source?.environmentId &&
+        source?.cwd === previous.source?.cwd &&
+        source?.faviconPath === previous.source?.faviconPath
+      ) {
+        return previous;
+      }
+      previous = { projectKey, source };
+      return previous;
+    }).pipe(Atom.withLabel(`${input.label}:${physicalProjectKey}`));
   });
 
-  const projectSourceAtom = Atom.family((physicalProjectKey: string) =>
-    Atom.family((settingsKey: string) => {
-      let previous: ProjectFaviconSource | null = null;
-      return Atom.make((get) => {
-        const source = get(sourceMapAtom(settingsKey)).get(physicalProjectKey) ?? null;
-        if (
-          source?.projectKey === previous?.projectKey &&
-          source?.environmentId === previous?.environmentId &&
-          source?.cwd === previous?.cwd &&
-          source?.faviconPath === previous?.faviconPath
-        ) {
-          return previous;
-        }
-        previous = source;
-        return source;
-      }).pipe(Atom.withLabel(`${input.label}:${physicalProjectKey}`));
-    }),
-  );
-
-  return {
-    sourceAtom: (physicalProjectKey: string, settings: ProjectGroupingSettings) =>
-      projectSourceAtom(physicalProjectKey)(JSON.stringify(settings)),
-  };
+  return { sourceAtom };
 }
 
 function notifyFaviconListeners(projectKey: string): void {

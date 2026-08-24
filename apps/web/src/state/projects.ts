@@ -1,12 +1,14 @@
 import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import { createProjectFaviconSourceAtoms } from "@t3tools/client-runtime/state/project-favicon";
+import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
 import { createEnvironmentProjectAtoms } from "@t3tools/client-runtime/state/projects";
 import { createProjectEnvironmentAtoms } from "@t3tools/client-runtime/state/projects";
 import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
 import { WS_METHODS } from "@t3tools/contracts";
+import { Atom } from "effect/unstable/reactivity";
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
-import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
+import { clientSettingsAtom } from "../hooks/useSettings";
 import { environmentSession } from "./session";
 import { environmentSnapshotAtom } from "./shell";
 
@@ -27,10 +29,14 @@ export const environmentProjects = createEnvironmentProjectAtoms({
   snapshotAtom: environmentSnapshotAtom,
 });
 
+const projectGroupingSettingsAtom = Atom.make((get) =>
+  selectProjectGroupingSettings(get(clientSettingsAtom)),
+).pipe(Atom.withLabel("web-project-grouping-settings"));
+
 export const projectFavicons = createProjectFaviconSourceAtoms({
   projectsAtom: environmentProjects.projectsAtom,
+  groupingSettingsAtom: projectGroupingSettingsAtom,
   preparedConnectionAtom: environmentSession.preparedConnectionValueAtom,
-  preferredEnvironmentIdAtom: primaryEnvironmentIdAtom,
   accountSessionAtom: managedRelaySessionAtom,
   label: "web-project-favicon",
 });

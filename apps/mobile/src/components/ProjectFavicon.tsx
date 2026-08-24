@@ -1,7 +1,7 @@
 import { SymbolView } from "./AppSymbol";
 import { Image } from "expo-image";
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 import { View } from "react-native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
@@ -17,7 +17,6 @@ import {
 } from "@t3tools/shared/projectFavicon";
 import { useThemeColor } from "../lib/useThemeColor";
 import { useAssetUrlState } from "../state/assets";
-import { useMobileProjectGroupingSettings } from "../state/project-grouping";
 import { projectFavicons } from "../state/projects";
 import {
   beginProjectFaviconRequest,
@@ -39,11 +38,9 @@ export function ProjectFavicon(props: {
   const physicalProjectKey = props.workspaceRoot
     ? derivePhysicalProjectKeyFromPath(props.environmentId, props.workspaceRoot)
     : null;
-  const groupingSettings = useMobileProjectGroupingSettings();
-  const source = useAtomValue(
-    projectFavicons.sourceAtom(physicalProjectKey ?? "", groupingSettings),
-  );
-  const projectKey = source?.projectKey ?? physicalProjectKey;
+  const selection = useAtomValue(projectFavicons.sourceAtom(physicalProjectKey ?? ""));
+  const source = physicalProjectKey === null ? null : selection.source;
+  const projectKey = physicalProjectKey === null ? null : selection.projectKey;
   const environmentId = source?.environmentId ?? props.environmentId;
   const workspaceRoot = source?.cwd ?? props.workspaceRoot;
   const faviconPath = source ? source.faviconPath : props.faviconPath;
@@ -70,12 +67,18 @@ export function ProjectFavicon(props: {
     [projectKey],
   );
   const loadedFavicon = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const missingLoadedSource =
+    faviconIsMissing &&
+    loadedFavicon !== null &&
+    workspaceRoot != null &&
+    loadedFavicon.cacheKey ===
+      getProjectFaviconCacheKey(environmentId, workspaceRoot, loadedFavicon.src);
 
-  useEffect(() => {
-    if (faviconIsMissing && projectKey !== null) {
+  useLayoutEffect(() => {
+    if (missingLoadedSource && projectKey !== null) {
       forgetProjectFavicon(projectKey);
     }
-  }, [faviconIsMissing, projectKey]);
+  }, [missingLoadedSource, projectKey]);
 
   const cacheKey =
     faviconUrl && workspaceRoot && !faviconIsMissing
@@ -88,7 +91,7 @@ export function ProjectFavicon(props: {
       projectKey={projectKey}
       cacheKey={cacheKey}
       faviconUrl={faviconIsMissing ? null : faviconUrl}
-      loadedFavicon={faviconIsMissing ? null : loadedFavicon}
+      loadedFavicon={missingLoadedSource ? null : loadedFavicon}
       open={props.open}
       projectTitle={props.projectTitle}
       size={size}

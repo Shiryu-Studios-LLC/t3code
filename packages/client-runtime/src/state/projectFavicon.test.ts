@@ -61,6 +61,32 @@ function makeProject(id: string, overrides: Partial<EnvironmentProject> = {}): E
   };
 }
 
+function makeFaviconAtoms(
+  projects: ReadonlyArray<EnvironmentProject>,
+  accountId: string | null = null,
+) {
+  const projectsAtom = Atom.make(projects);
+  const groupingSettingsAtom = Atom.make(repositoryGrouping);
+  const accountSessionAtom = Atom.make<{ readonly accountId: string } | null>(
+    accountId ? { accountId } : null,
+  );
+  const preparedConnectionAtom = Atom.family((_environmentId: EnvironmentId) =>
+    Atom.make(Option.none<PreparedConnection>()),
+  );
+  return {
+    projectsAtom,
+    accountSessionAtom,
+    registry: AtomRegistry.make(),
+    favicons: createProjectFaviconSourceAtoms({
+      projectsAtom,
+      groupingSettingsAtom,
+      preparedConnectionAtom,
+      accountSessionAtom,
+      label: "test-project-favicon",
+    }),
+  };
+}
+
 describe("selectProjectFaviconSources", () => {
   it("selects the same source regardless of project order", () => {
     const first = makeProject("first");
@@ -108,49 +134,39 @@ describe("selectProjectFaviconSources", () => {
     ).toBe(connected.environmentId);
   });
 
-  it("prefers the primary environment without switching after unrelated updates", () => {
+  it("keeps the same source after an unrelated project update", () => {
     const primary = makeProject("primary");
     const remote = makeProject("remote");
 
-    const before = selectSources([primary, remote], {
-      preferredEnvironmentId: primary.environmentId,
-    });
-    const after = selectSources(
-      [primary, { ...remote, title: "Renamed", updatedAt: "2026-08-01T00:00:00.000Z" }],
-      { preferredEnvironmentId: primary.environmentId },
-    );
+    const before = selectSources([primary, remote]);
+    const after = selectSources([
+      primary,
+      { ...remote, title: "Renamed", updatedAt: "2026-08-01T00:00:00.000Z" },
+    ]);
 
     expect(before.get(derivePhysicalProjectKey(remote))?.environmentId).toBe(primary.environmentId);
     expect(after.get(derivePhysicalProjectKey(remote))?.environmentId).toBe(primary.environmentId);
   });
 
-  it("keeps separate projects on their own configured icons", () => {
-    const first = makeProject("first", { faviconPath: "web.svg" });
-    const second = makeProject("second", { faviconPath: "mobile.svg" });
-    const sources = selectSources([first, second], {
-      settings: { ...repositoryGrouping, sidebarProjectGroupingMode: "separate" },
-    });
+  it.each(["separate", "repository_path"] as const)(
+    "keeps distinct projects isolated in %s grouping",
+    (sidebarProjectGroupingMode) => {
+      const web = makeProject("web", {
+        workspaceRoot: "/work/apps/web",
+        faviconPath: "web.svg",
+      });
+      const mobile = makeProject("mobile", {
+        workspaceRoot: "/work/apps/mobile",
+        faviconPath: "mobile.svg",
+      });
+      const sources = selectSources([web, mobile], {
+        settings: { ...repositoryGrouping, sidebarProjectGroupingMode },
+      });
 
-    expect(sources.get(derivePhysicalProjectKey(first))?.faviconPath).toBe("web.svg");
-    expect(sources.get(derivePhysicalProjectKey(second))?.faviconPath).toBe("mobile.svg");
-  });
-
-  it("keeps distinct repository paths on their own configured icons", () => {
-    const web = makeProject("web", {
-      workspaceRoot: "/work/apps/web",
-      faviconPath: "web.svg",
-    });
-    const mobile = makeProject("mobile", {
-      workspaceRoot: "/work/apps/mobile",
-      faviconPath: "mobile.svg",
-    });
-    const sources = selectSources([web, mobile], {
-      settings: { ...repositoryGrouping, sidebarProjectGroupingMode: "repository_path" },
-    });
-
-    expect(sources.get(derivePhysicalProjectKey(web))?.faviconPath).toBe("web.svg");
-    expect(sources.get(derivePhysicalProjectKey(mobile))?.faviconPath).toBe("mobile.svg");
-  });
+      expect(sources.get(derivePhysicalProjectKey(web))?.faviconPath).toBe("web.svg");
+      expect(sources.get(derivePhysicalProjectKey(mobile))?.faviconPath).toBe("mobile.svg");
+    },
+  );
 
   it("respects per-project grouping overrides", () => {
     const separate = makeProject("separate", { faviconPath: "separate.svg" });
@@ -185,52 +201,14 @@ describe("selectProjectFaviconSources", () => {
       selectSources([stale, cleared]).get(derivePhysicalProjectKey(cleared))?.faviconPath,
     ).toBe(null);
   });
-
-  it("keeps projects without repository identity scoped to their physical path", () => {
-    const first = makeProject("first", { repositoryIdentity: null });
-    const second = makeProject("second", { repositoryIdentity: null });
-    const sources = selectSources([first, second]);
-
-    expect(sources.get(derivePhysicalProjectKey(first))).toEqual({
-      projectKey: derivePhysicalProjectKey(first),
-      environmentId: first.environmentId,
-      cwd: first.workspaceRoot,
-      faviconPath: null,
-    });
-    expect(sources.get(derivePhysicalProjectKey(second))?.environmentId).toBe(second.environmentId);
-  });
-
-  it("keeps the same project separate between cloud accounts", () => {
-    const project = makeProject("shared");
-    const physicalKey = derivePhysicalProjectKey(project);
-    const first = selectSources([project], { accountId: "account-first" }).get(physicalKey);
-    const second = selectSources([project], { accountId: "account-second" }).get(physicalKey);
-
-    expect(first?.projectKey).toBe(`account-first:${repositoryIdentity.canonicalKey}`);
-    expect(second?.projectKey).toBe(`account-second:${repositoryIdentity.canonicalKey}`);
-  });
 });
 
 describe("project favicon source atoms", () => {
   it("preserves a project's selected source when another project changes", () => {
     const selected = makeProject("selected", { repositoryIdentity: null });
     const unrelated = makeProject("unrelated", { repositoryIdentity: null });
-    const projectsAtom = Atom.make<ReadonlyArray<EnvironmentProject>>([selected, unrelated]);
-    const preparedConnectionAtom = Atom.family((_environmentId: EnvironmentId) =>
-      Atom.make(Option.none<PreparedConnection>()),
-    );
-    const accountSessionAtom = Atom.make<{ readonly accountId: string } | null>(null);
-    const registry = AtomRegistry.make();
-    const faviconAtoms = createProjectFaviconSourceAtoms({
-      projectsAtom,
-      preparedConnectionAtom,
-      accountSessionAtom,
-      label: "test-project-favicon",
-    });
-    const selectedSourceAtom = faviconAtoms.sourceAtom(
-      derivePhysicalProjectKey(selected),
-      repositoryGrouping,
-    );
+    const { projectsAtom, registry, favicons } = makeFaviconAtoms([selected, unrelated]);
+    const selectedSourceAtom = favicons.sourceAtom(derivePhysicalProjectKey(selected));
     const firstSource = registry.get(selectedSourceAtom);
 
     registry.set(projectsAtom, [selected, { ...unrelated, title: "Renamed" }]);
@@ -240,30 +218,14 @@ describe("project favicon source atoms", () => {
 
   it("isolates loaded icons when accounts change and restores them for the same account", () => {
     const project = makeProject("account-shared");
-    const projectsAtom = Atom.make<ReadonlyArray<EnvironmentProject>>([project]);
-    const preparedConnectionAtom = Atom.family((_environmentId: EnvironmentId) =>
-      Atom.make(Option.none<PreparedConnection>()),
-    );
-    const accountSessionAtom = Atom.make<{ readonly accountId: string } | null>({
-      accountId: "account-first",
-    });
-    const registry = AtomRegistry.make();
-    const faviconAtoms = createProjectFaviconSourceAtoms({
-      projectsAtom,
-      preparedConnectionAtom,
-      accountSessionAtom,
-      label: "test-account-favicon",
-    });
-    const sourceAtom = faviconAtoms.sourceAtom(
-      derivePhysicalProjectKey(project),
-      repositoryGrouping,
-    );
-    const firstAccountKey = registry.get(sourceAtom)!.projectKey;
+    const { accountSessionAtom, registry, favicons } = makeFaviconAtoms([project], "account-first");
+    const sourceAtom = favicons.sourceAtom(derivePhysicalProjectKey(project));
+    const firstAccountKey = registry.get(sourceAtom).projectKey;
     const favicon = { cacheKey: "account-icon", src: "/icons/account.svg" };
     rememberProjectFavicon(firstAccountKey, favicon);
 
     registry.set(accountSessionAtom, { accountId: "account-second" });
-    const secondAccountKey = registry.get(sourceAtom)!.projectKey;
+    const secondAccountKey = registry.get(sourceAtom).projectKey;
 
     expect(secondAccountKey).not.toBe(firstAccountKey);
     expect(getLoadedProjectFavicon(secondAccountKey)).toBeNull();
@@ -274,9 +236,27 @@ describe("project favicon source atoms", () => {
 
     registry.set(accountSessionAtom, { accountId: "account-first" });
 
-    expect(registry.get(sourceAtom)?.projectKey).toBe(firstAccountKey);
+    expect(registry.get(sourceAtom).projectKey).toBe(firstAccountKey);
     expect(getLoadedProjectFavicon(firstAccountKey)).toEqual(lateFavicon);
     forgetProjectFavicon(firstAccountKey);
+  });
+
+  it("keeps fallback project keys account-scoped before project records load", () => {
+    const physicalProjectKey = "environment-shared:/work/shared";
+    const { accountSessionAtom, registry, favicons } = makeFaviconAtoms([], "account-first");
+    const sourceAtom = favicons.sourceAtom(physicalProjectKey);
+
+    expect(registry.get(sourceAtom)).toEqual({
+      projectKey: `account-first:${physicalProjectKey}`,
+      source: null,
+    });
+
+    registry.set(accountSessionAtom, { accountId: "account-second" });
+
+    expect(registry.get(sourceAtom)).toEqual({
+      projectKey: `account-second:${physicalProjectKey}`,
+      source: null,
+    });
   });
 });
 

@@ -34,6 +34,7 @@ import {
   themeAllowsSidebarArtwork,
 } from "~/themePalette";
 import * as Struct from "effect/Struct";
+import { Atom } from "effect/unstable/reactivity";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -86,6 +87,11 @@ function subscribeClientSettings(listener: () => void): () => void {
     clientSettingsListeners.delete(listener);
   };
 }
+
+export const clientSettingsAtom = Atom.make((get) => {
+  get.addFinalizer(subscribeClientSettings(() => get.setSelf(getClientSettingsSnapshot())));
+  return getClientSettingsSnapshot();
+}).pipe(Atom.withLabel("web-client-settings"));
 
 function getClientSettingsHydratedSnapshot(): boolean {
   return clientSettingsHydrated;
