@@ -6,11 +6,9 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import type { PreparedConnection } from "../connection/model.ts";
 import type { EnvironmentProject } from "./models.ts";
 import {
-  clearProjectFavicons,
   createProjectFaviconSourceAtoms,
   forgetProjectFavicon,
   getLoadedProjectFavicon,
-  getProjectFaviconGeneration,
   rememberProjectFavicon,
   selectProjectFaviconSources,
   subscribeProjectFavicons,
@@ -201,6 +199,16 @@ describe("selectProjectFaviconSources", () => {
     });
     expect(sources.get(derivePhysicalProjectKey(second))?.environmentId).toBe(second.environmentId);
   });
+
+  it("keeps the same project separate between cloud accounts", () => {
+    const project = makeProject("shared");
+    const physicalKey = derivePhysicalProjectKey(project);
+    const first = selectSources([project], { accountId: "account-first" }).get(physicalKey);
+    const second = selectSources([project], { accountId: "account-second" }).get(physicalKey);
+
+    expect(first?.projectKey).toBe(`account-first:${repositoryIdentity.canonicalKey}`);
+    expect(second?.projectKey).toBe(`account-second:${repositoryIdentity.canonicalKey}`);
+  });
 });
 
 describe("project favicon source atoms", () => {
@@ -211,10 +219,12 @@ describe("project favicon source atoms", () => {
     const preparedConnectionAtom = Atom.family((_environmentId: EnvironmentId) =>
       Atom.make(Option.none<PreparedConnection>()),
     );
+    const accountSessionAtom = Atom.make<{ readonly accountId: string } | null>(null);
     const registry = AtomRegistry.make();
     const faviconAtoms = createProjectFaviconSourceAtoms({
       projectsAtom,
       preparedConnectionAtom,
+      accountSessionAtom,
       label: "test-project-favicon",
     });
     const selectedSourceAtom = faviconAtoms.sourceAtom(
@@ -226,6 +236,47 @@ describe("project favicon source atoms", () => {
     registry.set(projectsAtom, [selected, { ...unrelated, title: "Renamed" }]);
 
     expect(registry.get(selectedSourceAtom)).toBe(firstSource);
+  });
+
+  it("isolates loaded icons when accounts change and restores them for the same account", () => {
+    const project = makeProject("account-shared");
+    const projectsAtom = Atom.make<ReadonlyArray<EnvironmentProject>>([project]);
+    const preparedConnectionAtom = Atom.family((_environmentId: EnvironmentId) =>
+      Atom.make(Option.none<PreparedConnection>()),
+    );
+    const accountSessionAtom = Atom.make<{ readonly accountId: string } | null>({
+      accountId: "account-first",
+    });
+    const registry = AtomRegistry.make();
+    const faviconAtoms = createProjectFaviconSourceAtoms({
+      projectsAtom,
+      preparedConnectionAtom,
+      accountSessionAtom,
+      label: "test-account-favicon",
+    });
+    const sourceAtom = faviconAtoms.sourceAtom(
+      derivePhysicalProjectKey(project),
+      repositoryGrouping,
+    );
+    const firstAccountKey = registry.get(sourceAtom)!.projectKey;
+    const favicon = { cacheKey: "account-icon", src: "/icons/account.svg" };
+    rememberProjectFavicon(firstAccountKey, favicon);
+
+    registry.set(accountSessionAtom, { accountId: "account-second" });
+    const secondAccountKey = registry.get(sourceAtom)!.projectKey;
+
+    expect(secondAccountKey).not.toBe(firstAccountKey);
+    expect(getLoadedProjectFavicon(secondAccountKey)).toBeNull();
+
+    const lateFavicon = { cacheKey: "late-account-icon", src: "/icons/late-account.svg" };
+    rememberProjectFavicon(firstAccountKey, lateFavicon);
+    expect(getLoadedProjectFavicon(secondAccountKey)).toBeNull();
+
+    registry.set(accountSessionAtom, { accountId: "account-first" });
+
+    expect(registry.get(sourceAtom)?.projectKey).toBe(firstAccountKey);
+    expect(getLoadedProjectFavicon(firstAccountKey)).toEqual(lateFavicon);
+    forgetProjectFavicon(firstAccountKey);
   });
 });
 
@@ -267,31 +318,6 @@ describe("loaded project favicons", () => {
     expect(listener).toHaveBeenCalledTimes(2);
     forgetProjectFavicon(projectKey);
     forgetProjectFavicon("unrelated-project");
-  });
-
-  it("clears loaded icons and notifies their subscribers on account changes", () => {
-    const listener = vi.fn();
-    const unsubscribe = subscribeProjectFavicons("account-project", listener);
-    rememberProjectFavicon("account-project", {
-      cacheKey: "account-icon",
-      src: "/icons/account.svg",
-    });
-
-    clearProjectFavicons();
-
-    expect(getLoadedProjectFavicon("account-project")).toBeNull();
-    expect(listener).toHaveBeenCalledTimes(2);
-    unsubscribe();
-  });
-
-  it("rejects an icon request that finishes after its account was cleared", () => {
-    const generation = getProjectFaviconGeneration();
-    const favicon = { cacheKey: "previous-account", src: "/icons/previous-account.svg" };
-
-    clearProjectFavicons();
-
-    expect(rememberProjectFavicon("account-project", favicon, generation)).toBe(false);
-    expect(getLoadedProjectFavicon("account-project")).toBeNull();
   });
 
   it("evicts the oldest favicon after the cache reaches its limit", () => {

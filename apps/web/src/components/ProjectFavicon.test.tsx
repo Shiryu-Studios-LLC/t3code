@@ -48,21 +48,6 @@ const hooks = vi.hoisted(() => {
     useEffect(effect: EffectCallback) {
       effects.push(effect);
     },
-    useMemo<T>(create: () => T, dependencies: ReadonlyArray<unknown>): T {
-      const index = nextIndex();
-      const previous = slots[index] as
-        | { readonly dependencies: ReadonlyArray<unknown>; readonly value: T }
-        | undefined;
-      if (
-        previous === undefined ||
-        dependencies.some(
-          (dependency, index) => !Object.is(dependency, previous.dependencies[index]),
-        )
-      ) {
-        slots[index] = { dependencies, value: create() };
-      }
-      return (slots[index] as { readonly value: T }).value;
-    },
     useState<T>(initialValue: T | (() => T)): [T, Dispatch<SetStateAction<T>>] {
       const index = nextIndex();
       if (index >= slots.length) {
@@ -85,7 +70,6 @@ vi.mock("react", async (importOriginal) => {
     ...actual,
     useCallback: <T,>(callback: T) => callback,
     useEffect: hooks.useEffect,
-    useMemo: hooks.useMemo,
     useState: hooks.useState,
     useSyncExternalStore: (
       _subscribe: (listener: () => void) => () => void,
@@ -120,7 +104,6 @@ vi.mock("../assets/assetUrls", () => ({
 }));
 
 import {
-  clearProjectFavicons,
   forgetProjectFavicon,
   getLoadedProjectFavicon,
 } from "@t3tools/client-runtime/state/project-favicon";
@@ -267,16 +250,6 @@ describe("ProjectFavicon", () => {
 
     expect(disconnectedElement.props.src).toBe(testState.faviconUrl);
     expect(disconnectedElement.props.cacheKey).toBe(loadedElement.props.cacheKey);
-  });
-
-  it("ignores an image that finishes loading after an account change", () => {
-    const { Component, props } = resolveImageComponent();
-    const pendingImage = renderImage(Component, props).props.children[2];
-
-    clearProjectFavicons();
-    pendingImage?.props.onLoad?.();
-
-    expect(getLoadedProjectFavicon(props.projectKey)).toBeNull();
   });
 
   it("shares one loaded favicon across members of a logical project group", () => {

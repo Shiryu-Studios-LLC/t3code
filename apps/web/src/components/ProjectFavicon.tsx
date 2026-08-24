@@ -2,7 +2,6 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   forgetProjectFavicon,
   getLoadedProjectFavicon,
-  getProjectFaviconGeneration,
   rememberProjectFavicon,
   subscribeProjectFavicons,
 } from "@t3tools/client-runtime/state/project-favicon";
@@ -13,7 +12,7 @@ import {
 } from "@t3tools/shared/projectFavicon";
 import { FolderIcon } from "lucide-react";
 import type { ComponentType } from "react";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useAssetUrlState } from "../assets/assetUrls";
 import { useClientSettings } from "../hooks/useSettings";
 import { derivePhysicalProjectKeyFromPath, selectProjectGroupingSettings } from "../logicalProject";
@@ -111,10 +110,6 @@ function ProjectFaviconImage({
   const [displayedSrc, setDisplayedSrc] = useState<string | null>(
     () => getLoadedProjectFavicon(projectKey)?.src ?? null,
   );
-  const faviconRequest = useMemo(
-    () => ({ cacheKey, src, generation: getProjectFaviconGeneration() }),
-    [cacheKey, src],
-  );
   const isLoading = displayedSrc !== src;
   const handleLoadError = (failedSrc: string) => {
     forgetProjectFavicon(projectKey, failedSrc);
@@ -140,9 +135,7 @@ function ProjectFaviconImage({
           alt=""
           className="hidden"
           onLoad={() => {
-            if (!rememberProjectFavicon(projectKey, faviconRequest, faviconRequest.generation)) {
-              return;
-            }
+            rememberProjectFavicon(projectKey, { cacheKey, src });
             setDisplayedSrc(src);
           }}
           onError={() => handleLoadError(src)}

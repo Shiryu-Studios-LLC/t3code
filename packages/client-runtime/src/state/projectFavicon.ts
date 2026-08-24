@@ -25,7 +25,6 @@ export interface LoadedProjectFavicon {
 const loadedFavicons = new Map<string, LoadedProjectFavicon>();
 const faviconListeners = new Map<string, Set<() => void>>();
 const MAX_LOADED_FAVICONS = 256;
-let faviconGeneration = 0;
 
 function shouldReplaceFaviconSource(
   current: EnvironmentProject,
@@ -55,6 +54,7 @@ export function selectProjectFaviconSources(input: {
   readonly settings: ProjectGroupingSettings;
   readonly connectedEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly preferredEnvironmentId?: EnvironmentId | null;
+  readonly accountId?: string | null;
 }): ReadonlyMap<string, ProjectFaviconSource> {
   const sources = new Map<string, ProjectFaviconSource>();
   const groups = buildProjectGroups({
@@ -71,7 +71,7 @@ export function selectProjectFaviconSources(input: {
       group.representative,
     );
     const faviconSource: ProjectFaviconSource = {
-      projectKey: group.key,
+      projectKey: input.accountId ? `${input.accountId}:${group.key}` : group.key,
       environmentId: source.environmentId,
       cwd: source.workspaceRoot,
       faviconPath: source.faviconPath ?? null,
@@ -91,6 +91,7 @@ export function createProjectFaviconSourceAtoms(input: {
     environmentId: EnvironmentId,
   ) => Atom.Atom<Option.Option<PreparedConnection>>;
   readonly preferredEnvironmentIdAtom?: Atom.Atom<EnvironmentId | null>;
+  readonly accountSessionAtom: Atom.Atom<{ readonly accountId: string } | null>;
   readonly label: string;
 }) {
   const sourceMapAtom = Atom.family((settingsKey: string) => {
@@ -111,6 +112,7 @@ export function createProjectFaviconSourceAtoms(input: {
         preferredEnvironmentId: input.preferredEnvironmentIdAtom
           ? get(input.preferredEnvironmentIdAtom)
           : null,
+        accountId: get(input.accountSessionAtom)?.accountId ?? null,
       });
     }).pipe(Atom.withLabel(`${input.label}:sources`));
   });
@@ -148,19 +150,9 @@ export function getLoadedProjectFavicon(projectKey: string): LoadedProjectFavico
   return loadedFavicons.get(projectKey) ?? null;
 }
 
-export function getProjectFaviconGeneration(): number {
-  return faviconGeneration;
-}
-
-export function rememberProjectFavicon(
-  projectKey: string,
-  favicon: LoadedProjectFavicon,
-  generation = faviconGeneration,
-): boolean {
-  if (generation !== faviconGeneration) return false;
-
+export function rememberProjectFavicon(projectKey: string, favicon: LoadedProjectFavicon): void {
   const existing = loadedFavicons.get(projectKey);
-  if (existing?.cacheKey === favicon.cacheKey && existing.src === favicon.src) return true;
+  if (existing?.cacheKey === favicon.cacheKey && existing.src === favicon.src) return;
 
   loadedFavicons.delete(projectKey);
   loadedFavicons.set(projectKey, favicon);
@@ -173,7 +165,6 @@ export function rememberProjectFavicon(
   }
 
   notifyFaviconListeners(projectKey);
-  return true;
 }
 
 export function forgetProjectFavicon(projectKey: string, src?: string): void {
@@ -182,13 +173,6 @@ export function forgetProjectFavicon(projectKey: string, src?: string): void {
 
   loadedFavicons.delete(projectKey);
   notifyFaviconListeners(projectKey);
-}
-
-export function clearProjectFavicons(): void {
-  faviconGeneration++;
-  for (const projectKey of loadedFavicons.keys()) {
-    forgetProjectFavicon(projectKey);
-  }
 }
 
 export function subscribeProjectFavicons(projectKey: string, listener: () => void): () => void {

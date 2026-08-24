@@ -4,11 +4,9 @@ import { useAtomValue } from "@effect/atom-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useSyncExternalStore } from "react";
 import { View } from "react-native";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import {
   forgetProjectFavicon,
   getLoadedProjectFavicon,
-  getProjectFaviconGeneration,
   rememberProjectFavicon,
   subscribeProjectFavicons,
 } from "@t3tools/client-runtime/state/project-favicon";
@@ -21,7 +19,6 @@ import { useThemeColor } from "../lib/useThemeColor";
 import { useAssetUrlState } from "../state/assets";
 import { useMobileProjectGroupingSettings } from "../state/project-grouping";
 import { projectFavicons } from "../state/projects";
-import { usePreparedConnection } from "../state/session";
 import {
   beginProjectFaviconRequest,
   createProjectFaviconRequest,
@@ -50,12 +47,6 @@ export function ProjectFavicon(props: {
   const environmentId = source?.environmentId ?? props.environmentId;
   const workspaceRoot = source?.cwd ?? props.workspaceRoot;
   const faviconPath = source ? source.faviconPath : props.faviconPath;
-  const preparedConnection = usePreparedConnection(environmentId);
-  const relaySession = useAtomValue(managedRelaySessionAtom);
-  const relayAccountUnavailable =
-    preparedConnection._tag === "Some" &&
-    preparedConnection.value.target._tag === "RelayConnectionTarget" &&
-    relaySession === null;
   const faviconState = useAssetUrlState(
     environmentId,
     workspaceRoot === null || workspaceRoot === undefined
@@ -66,12 +57,9 @@ export function ProjectFavicon(props: {
           ...(faviconPath ? { path: faviconPath } : {}),
         },
   );
-  const faviconUrl =
-    faviconState._tag === "Success" && !relayAccountUnavailable ? faviconState.url : null;
+  const faviconUrl = faviconState._tag === "Success" ? faviconState.url : null;
   const faviconIsMissing =
-    faviconState._tag === "Success" &&
-    !relayAccountUnavailable &&
-    isProjectFaviconFallbackUrl(faviconState.url);
+    faviconState._tag === "Success" && isProjectFaviconFallbackUrl(faviconState.url);
   const subscribe = useCallback(
     (listener: () => void) =>
       projectKey === null ? () => {} : subscribeProjectFavicons(projectKey, listener),
@@ -118,11 +106,10 @@ function ProjectFaviconImage(props: {
   readonly size: number;
 }) {
   const iconMuted = useThemeColor("--color-icon-subtle");
-  const generation = getProjectFaviconGeneration();
-  const currentRequest = useMemo(() => {
-    const request = createProjectFaviconRequest(props.cacheKey, props.faviconUrl);
-    return request === null ? null : { ...request, generation };
-  }, [generation, props.cacheKey, props.faviconUrl]);
+  const currentRequest = useMemo(
+    () => createProjectFaviconRequest(props.cacheKey, props.faviconUrl),
+    [props.cacheKey, props.faviconUrl],
+  );
   const loadedRequest = useMemo(
     () =>
       createProjectFaviconRequest(
@@ -184,19 +171,12 @@ function ProjectFaviconImage(props: {
             }}
             contentFit="contain"
             onLoad={() => {
-              if (
-                !isReplacement ||
-                currentRequest?.generation !== getProjectFaviconGeneration() ||
-                !markProjectFaviconLoaded(faviconRequest)
-              ) {
-                return;
-              }
+              if (!isReplacement || !markProjectFaviconLoaded(faviconRequest)) return;
               if (props.projectKey !== null) {
-                rememberProjectFavicon(
-                  props.projectKey,
-                  { cacheKey: faviconRequest.cacheKey, src: faviconRequest.faviconUrl },
-                  currentRequest.generation,
-                );
+                rememberProjectFavicon(props.projectKey, {
+                  cacheKey: faviconRequest.cacheKey,
+                  src: faviconRequest.faviconUrl,
+                });
               }
             }}
             onError={() => {

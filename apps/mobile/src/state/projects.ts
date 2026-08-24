@@ -1,3 +1,4 @@
+import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import { createProjectFaviconSourceAtoms } from "@t3tools/client-runtime/state/project-favicon";
 import { createEnvironmentProjectAtoms } from "@t3tools/client-runtime/state/projects";
 import { createProjectEnvironmentAtoms } from "@t3tools/client-runtime/state/projects";
@@ -15,5 +16,6 @@ export const environmentProjects = createEnvironmentProjectAtoms({
 export const projectFavicons = createProjectFaviconSourceAtoms({
   projectsAtom: environmentProjects.projectsAtom,
   preparedConnectionAtom: environmentSession.preparedConnectionValueAtom,
+  accountSessionAtom: managedRelaySessionAtom,
   label: "mobile-project-favicon",
 });

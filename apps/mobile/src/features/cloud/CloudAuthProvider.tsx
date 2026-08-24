@@ -1,11 +1,6 @@
 import { ClerkProvider, useAuth } from "@clerk/expo";
 import { tokenCache } from "@clerk/expo/token-cache";
-import {
-  ManagedRelay,
-  managedRelaySessionAtom,
-  setManagedRelaySession,
-} from "@t3tools/client-runtime/relay";
-import { clearProjectFavicons } from "@t3tools/client-runtime/state/project-favicon";
+import { ManagedRelay, setManagedRelaySession } from "@t3tools/client-runtime/relay";
 import {
   reportAtomCommandResult,
   settleAsyncResult,
@@ -36,9 +31,7 @@ function resetManagedRelayTokenCache() {
 
 export function deactivateCloudRelayAccount(): void {
   setAgentAwarenessRelayTokenProvider(null);
-  const hadActiveAccount = appAtomRegistry.get(managedRelaySessionAtom) !== null;
   setManagedRelaySession(appAtomRegistry, null);
-  if (hadActiveAccount) clearProjectFavicons();
 }
 
 export function activateCloudRelayAccount(
