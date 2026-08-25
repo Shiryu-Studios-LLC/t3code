@@ -19,8 +19,9 @@ export function ContextWindowMeter(props: {
   modelDisplayName?: string | null;
   onCompact?: (() => void) | undefined;
   compactDisabled?: boolean | undefined;
+  compactDisabledReason?: string | null | undefined;
 }) {
-  const { usage, modelDisplayName, onCompact, compactDisabled } = props;
+  const { usage, modelDisplayName, onCompact, compactDisabled, compactDisabledReason } = props;
   const usedPercentage = formatPercentage(usage.usedPercentage);
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0));
   const radius = 9.75;
@@ -140,6 +141,7 @@ export function ContextWindowMeter(props: {
               variant="outline"
               className="mt-1 w-full justify-center"
               disabled={compactDisabled}
+              aria-label={compactDisabledReason ?? "Compact context"}
               onClick={onCompact}
             >
               <Minimize2Icon aria-hidden="true" />

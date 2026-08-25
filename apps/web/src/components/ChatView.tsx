@@ -198,7 +198,12 @@ import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
-import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  NO_PROVIDER_MODEL_SELECTION,
+  resolveSelectableProviderInstanceEntry,
+} from "../providerInstances";
 import {
   useClientSettings,
   useClientSettingsHydrated,
@@ -2782,6 +2787,19 @@ function ChatViewContent(props: ChatViewProps) {
     activeThread?.modelSelection.instanceId ??
     activeProject?.defaultModelSelection?.instanceId ??
     null;
+  const compactionProviderAvailable = useMemo(() => {
+    const claudeProviders = applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(providerStatuses),
+      settings,
+    ).filter((provider) => provider.driverKind === "claudeAgent");
+
+    return (
+      resolveSelectableProviderInstanceEntry(
+        claudeProviders,
+        activeProviderInstanceId ?? undefined,
+      ) !== undefined
+    );
+  }, [activeProviderInstanceId, providerStatuses, settings]);
   const activeProviderStatus = useMemo(() => {
     if (activeProviderInstanceId) {
       return (
@@ -4776,10 +4794,10 @@ function ChatViewContent(props: ChatViewProps) {
       : null;
   const compactDisabled =
     !activeThread ||
+    !activeProject ||
     !isServerThread ||
     selectedProvider !== "claudeAgent" ||
-    !activeProviderStatus?.enabled ||
-    activeProviderStatus.availability === "unavailable" ||
+    !compactionProviderAvailable ||
     isWorking ||
     threadDetailLoading ||
     isPreparingWorktree ||
@@ -4789,6 +4807,15 @@ function ChatViewContent(props: ChatViewProps) {
     pendingUserInputs.length > 0 ||
     showPlanFollowUpPrompt ||
     composerHasUnsentContent;
+  const compactDisabledReason = compactDisabled
+    ? composerHasUnsentContent
+      ? "Send or clear your draft before compacting"
+      : !activeProject
+        ? "Choose a project before compacting"
+        : !compactionProviderAvailable
+          ? "Enable a Claude provider before compacting"
+          : "Compacting is unavailable right now"
+    : null;
   const resumeCompactionBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     if (
       !activeThread ||
@@ -4821,6 +4848,7 @@ function ChatViewContent(props: ChatViewProps) {
           size="xs"
           variant="outline"
           disabled={compactDisabled}
+          aria-label={compactDisabledReason ?? "Compact"}
           onClick={() => {
             if (compactDisabled) return;
             composerRef.current?.compactContext();
@@ -4836,6 +4864,7 @@ function ChatViewContent(props: ChatViewProps) {
     activeContextWindow,
     activeThread,
     compactDisabled,
+    compactDisabledReason,
     composerRef,
     dismissedResumeCompactionKey,
     nativeResumeCompactionDismissed,
@@ -6982,6 +7011,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activeThreadModelSelection={activeThread?.modelSelection}
                             activeContextWindow={activeContextWindow}
                             compactDisabled={compactDisabled}
+                            compactDisabledReason={compactDisabledReason}
                             resolvedTheme={resolvedTheme}
                             settings={settings}
                             keybindings={keybindings}

@@ -44,4 +44,18 @@ describe("ContextWindowMeter", () => {
     expect(markup).toContain('data-close-delay="0"');
     expect(markup).not.toContain("Compact context");
   });
+
+  it("explains why the compact action is disabled", () => {
+    const markup = renderToStaticMarkup(
+      <ContextWindowMeter
+        usage={usage}
+        onCompact={() => {}}
+        compactDisabled
+        compactDisabledReason="Send or clear your draft before compacting"
+      />,
+    );
+
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain('aria-label="Send or clear your draft before compacting"');
+  });
 });
