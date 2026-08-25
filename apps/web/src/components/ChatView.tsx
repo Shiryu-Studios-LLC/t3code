@@ -4780,9 +4780,7 @@ function ChatViewContent(props: ChatViewProps) {
     selectedProvider !== "claudeAgent" ||
     !activeProviderStatus?.enabled ||
     activeProviderStatus.availability === "unavailable" ||
-    phase === "running" ||
-    isSendBusy ||
-    isConnecting ||
+    isWorking ||
     threadDetailLoading ||
     isPreparingWorktree ||
     activeEnvironmentUnavailable ||
