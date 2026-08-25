@@ -122,12 +122,7 @@ import {
   renderProviderTraitsPicker,
 } from "./composerProviderState";
 import { ContextWindowMeter } from "./ContextWindowMeter";
-import {
-  resolveContextWindowModelDisplayName,
-  shouldOfferResumeCompaction,
-} from "./ContextWindowMeter.logic";
-import { formatContextWindowTokens } from "~/lib/contextWindow";
-import { useNowMinute } from "../../hooks/useNowMinute";
+import { resolveContextWindowModelDisplayName } from "./ContextWindowMeter.logic";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
@@ -267,7 +262,7 @@ import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import type { PendingApproval, PendingUserInput } from "../../session-logic";
-import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
+import type { ContextWindowSnapshot } from "../../lib/contextWindow";
 import {
   formatProviderSkillDisplayName,
   getProviderSlashCommandsForSlashMenu,
@@ -439,7 +434,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
 
 const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(props: {
   compact: boolean;
-  activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
+  activeContextWindow: ContextWindowSnapshot | null;
   activeThreadModelDisplayName: string | null;
   isPreparingWorktree: boolean;
   pendingAction: {
@@ -463,6 +458,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onCompactContext?: (() => void) | undefined;
+  compactDisabled: boolean;
 }) {
   return (
     <>
@@ -471,7 +467,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
           usage={props.activeContextWindow}
           modelDisplayName={props.activeThreadModelDisplayName}
           onCompact={props.onCompactContext}
-          compactDisabled={props.isRunning || props.isSendBusy || props.isConnecting}
+          compactDisabled={props.compactDisabled}
         />
       ) : null}
       {props.isPreparingWorktree ? (
@@ -511,6 +507,7 @@ export interface ChatComposerHandle {
   openModelPicker: () => void;
   toggleModelPicker: () => void;
   isModelPickerOpen: () => boolean;
+  compactContext: () => void;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -613,7 +610,8 @@ export interface ChatComposerProps {
   activeThreadModelSelection: ModelSelection | null | undefined;
 
   // Context window
-  activeThreadActivities: Thread["activities"] | undefined;
+  activeContextWindow: ContextWindowSnapshot | null;
+  compactDisabled: boolean;
 
   // Misc
   resolvedTheme: "light" | "dark";
@@ -705,7 +703,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     providerStatuses,
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
-    activeThreadActivities,
+    activeContextWindow,
+    compactDisabled,
     resolvedTheme,
     settings,
     keybindings,
@@ -1008,33 +1007,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Context window
   // ------------------------------------------------------------------
-  const activeContextWindow = useMemo(
-    () => deriveLatestContextWindowSnapshot(activeThreadActivities ?? []),
-    [activeThreadActivities],
-  );
   const activeThreadModelDisplayName = useMemo(
     () => resolveContextWindowModelDisplayName(activeThreadModelSelection, modelOptionsByInstance),
     [activeThreadModelSelection, modelOptionsByInstance],
   );
-  const nowMinute = useNowMinute();
-  const resumeCompactionNoticeKey =
-    activeThreadId && activeContextWindow
-      ? `${activeThreadId}:${activeContextWindow.updatedAt}`
-      : null;
-  const [dismissedResumeCompactionNoticeKey, setDismissedResumeCompactionNoticeKey] = useState<
-    string | null
-  >(null);
-  const showResumeCompactionNotice =
-    phase !== "running" &&
-    pendingUserInputs.length === 0 &&
-    resumeCompactionNoticeKey !== null &&
-    dismissedResumeCompactionNoticeKey !== resumeCompactionNoticeKey &&
-    shouldOfferResumeCompaction({
-      provider: selectedProvider,
-      usedTokens: activeContextWindow?.usedTokens,
-      updatedAt: activeContextWindow?.updatedAt,
-      now: `${nowMinute}:00.000Z`,
-    });
 
   // ------------------------------------------------------------------
   // Composer-local state
@@ -2010,25 +1986,34 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
   const compactThreadContext = useCallback(() => {
-    if (phase === "running" || isSendBusy || isConnecting || !activeThreadId) {
+    if (
+      compactDisabled ||
+      composerSendState.hasSendableContent ||
+      activePendingApproval !== null ||
+      pendingUserInputs.length > 0 ||
+      phase === "running" ||
+      isSendBusy ||
+      isConnecting ||
+      !activeThreadId
+    ) {
       return;
     }
 
-    if (resumeCompactionNoticeKey) {
-      setDismissedResumeCompactionNoticeKey(resumeCompactionNoticeKey);
-    }
     promptRef.current = "/compact";
     setComposerDraftPrompt(composerDraftTarget, "/compact");
     onSend();
   }, [
+    activePendingApproval,
     activeThreadId,
+    compactDisabled,
     composerDraftTarget,
+    composerSendState.hasSendableContent,
     isConnecting,
     isSendBusy,
     onSend,
+    pendingUserInputs.length,
     phase,
     promptRef,
-    resumeCompactionNoticeKey,
     setComposerDraftPrompt,
   ]);
   const expandMobileComposer = useCallback(() => {
@@ -2803,6 +2788,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       toggleModelPicker: () => {
         setIsComposerModelPickerOpen((open) => !open);
       },
+      compactContext: compactThreadContext,
       isModelPickerOpen: () => isComposerModelPickerOpen,
       readSnapshot: () => {
         return readComposerSnapshot();
@@ -2914,6 +2900,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       selectedPromptEffort,
       selectedProvider,
       selectedProviderModels,
+      compactThreadContext,
     ],
   );
 
@@ -2948,32 +2935,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       className={cn("mx-auto w-full min-w-0 max-w-3xl", hasShoulderTab && "pt-7")}
       data-chat-composer-form="true"
     >
-      {showResumeCompactionNotice && activeContextWindow ? (
-        <div
-          className="mb-2 flex items-start justify-between gap-3 border-l-2 border-primary/60 px-3 py-2"
-          data-chat-composer-compaction-notice="true"
-        >
-          <div className="min-w-0">
-            <div className="text-sm font-medium text-foreground">Resume with less context</div>
-            <div className="text-xs text-muted-foreground">
-              {formatContextWindowTokens(activeContextWindow.usedTokens)} tokens from an older
-              session
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              size="xs"
-              variant="ghost-muted"
-              onClick={() => setDismissedResumeCompactionNoticeKey(resumeCompactionNoticeKey)}
-            >
-              Keep
-            </Button>
-            <Button size="xs" onClick={compactThreadContext}>
-              Compact
-            </Button>
-          </div>
-        </div>
-      ) : null}
       {showComposerTopDrawer && (!isTasksDrawerOpen || hasBlockingComposerTopDrawer) ? (
         <div
           className="chat-composer-top-drawer"
@@ -3582,6 +3543,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
                     onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
+                    compactDisabled={compactDisabled}
                     {...(selectedProvider === "claudeAgent"
                       ? { onCompactContext: compactThreadContext }
                       : {})}

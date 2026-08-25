@@ -82,6 +82,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
@@ -179,6 +180,7 @@ import {
   CheckCircle2Icon,
   ChevronDownIcon,
   GitBranchIcon,
+  Minimize2Icon,
   PaperclipIcon,
   WifiOffIcon,
 } from "lucide-react";
@@ -303,6 +305,11 @@ import {
   threadChangeRequestSnapshotsAtom,
 } from "./ThreadStatusIndicators";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import {
+  hasDismissedResumeCompaction,
+  shouldOfferResumeCompaction,
+} from "./chat/ContextWindowMeter.logic";
+import { deriveLatestContextWindowSnapshot, formatContextWindowTokens } from "../lib/contextWindow";
 import { ThreadSyncStatusPill } from "./chat/ThreadSyncStatusPill";
 import {
   DRAFT_HERO_TRANSITION_ANIMATION_ID,
@@ -1364,6 +1371,18 @@ function ChatViewContent(props: ChatViewProps) {
   const composerActiveProvider = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
   );
+  const composerHasUnsentContent = useComposerDraftStore((store) => {
+    const draft = store.getComposerDraft(composerDraftTarget);
+    return Boolean(
+      draft &&
+      (draft.prompt.trim().length > 0 ||
+        draft.images.length > 0 ||
+        draft.terminalContexts.length > 0 ||
+        draft.elementContexts.length > 0 ||
+        draft.previewAnnotations.length > 0 ||
+        draft.reviewComments.length > 0),
+    );
+  });
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const setComposerDraftTerminalContexts = useComposerDraftStore(
@@ -2296,6 +2315,10 @@ function ChatViewContent(props: ChatViewProps) {
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
+  const activeContextWindow = useMemo(
+    () => deriveLatestContextWindowSnapshot(threadActivities),
+    [threadActivities],
+  );
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
   const turnPlans = useMemo(() => deriveTurnPlans(threadActivities), [threadActivities]);
   // Native subagent fold: memoized by activity-list identity, shared by the
@@ -2768,6 +2791,25 @@ function ChatViewContent(props: ChatViewProps) {
     const defaultInstanceId = defaultInstanceIdForDriver(selectedProvider);
     return providerStatuses.find((status) => status.instanceId === defaultInstanceId) ?? null;
   }, [activeProviderInstanceId, providerStatuses, selectedProvider]);
+  const [resumeCompactionPermanentlyDismissed, setResumeCompactionPermanentlyDismissed] =
+    useLocalStorage(
+      `t3code:resume-compaction-dismissed:${environmentId}:${activeProviderInstanceId ?? "claudeAgent"}`,
+      false,
+      Schema.Boolean,
+    );
+  const nativeResumeCompactionDismissed = useMemo(
+    () => hasDismissedResumeCompaction(threadActivities),
+    [threadActivities],
+  );
+  useEffect(() => {
+    if (nativeResumeCompactionDismissed && !resumeCompactionPermanentlyDismissed) {
+      setResumeCompactionPermanentlyDismissed(true);
+    }
+  }, [
+    nativeResumeCompactionDismissed,
+    resumeCompactionPermanentlyDismissed,
+    setResumeCompactionPermanentlyDismissed,
+  ]);
   const providerStatusBannerKey = getProviderStatusBannerKey(activeProviderStatus);
   const [dismissedProviderStatusBannerKey, setDismissedProviderStatusBannerKey] = useState<
     string | null
@@ -4725,6 +4767,85 @@ function ChatViewContent(props: ChatViewProps) {
     isUnsnoozing,
     isUnsettling,
   ]);
+  const [dismissedResumeCompactionKey, setDismissedResumeCompactionKey] = useState<string | null>(
+    null,
+  );
+  const resumeCompactionKey =
+    activeThread && activeContextWindow
+      ? `${activeThread.id}:${activeContextWindow.updatedAt}`
+      : null;
+  const compactDisabled =
+    !activeThread ||
+    !isServerThread ||
+    selectedProvider !== "claudeAgent" ||
+    phase === "running" ||
+    isSendBusy ||
+    isConnecting ||
+    threadDetailLoading ||
+    isPreparingWorktree ||
+    activeEnvironmentUnavailable ||
+    feedbackUploading ||
+    pendingApprovals.length > 0 ||
+    pendingUserInputs.length > 0 ||
+    showPlanFollowUpPrompt ||
+    composerHasUnsentContent;
+  const resumeCompactionBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    if (
+      !activeThread ||
+      !activeContextWindow ||
+      resumeCompactionKey === null ||
+      dismissedResumeCompactionKey === resumeCompactionKey ||
+      resumeCompactionPermanentlyDismissed ||
+      nativeResumeCompactionDismissed ||
+      pendingUserInputs.length > 0 ||
+      phase === "running" ||
+      !shouldOfferResumeCompaction({
+        provider: selectedProvider,
+        usedTokens: activeContextWindow.usedTokens,
+        updatedAt: activeContextWindow.updatedAt,
+        now: `${nowMinute}:00.000Z`,
+      })
+    ) {
+      return null;
+    }
+
+    const dismiss = () => setDismissedResumeCompactionKey(resumeCompactionKey);
+    return {
+      id: `resume-compaction:${resumeCompactionKey}`,
+      variant: "info",
+      icon: <Minimize2Icon />,
+      title: "Resume with less context",
+      description: `${formatContextWindowTokens(activeContextWindow.usedTokens)} tokens from an older session`,
+      actions: (
+        <Button
+          size="xs"
+          disabled={compactDisabled}
+          onClick={() => {
+            if (compactDisabled) return;
+            composerRef.current?.compactContext();
+            dismiss();
+          }}
+        >
+          Compact
+        </Button>
+      ),
+      dismissLabel: "Keep full history",
+      onDismiss: dismiss,
+    };
+  }, [
+    activeContextWindow,
+    activeThread,
+    compactDisabled,
+    composerRef,
+    dismissedResumeCompactionKey,
+    nativeResumeCompactionDismissed,
+    nowMinute,
+    pendingUserInputs.length,
+    phase,
+    resumeCompactionKey,
+    resumeCompactionPermanentlyDismissed,
+    selectedProvider,
+  ]);
   const handleRestoreThreadBranch = useCallback(() => {
     if (gitStatusQuery.data?.hasWorkingTreeChanges) {
       setBranchRestoreConfirmOpen(true);
@@ -4739,6 +4860,8 @@ function ChatViewContent(props: ChatViewProps) {
     const calmSystemItems = systemComposerBannerItems.filter((item) => !isUrgentSystemItem(item));
     const backgroundLivenessItems =
       backgroundLivenessBannerItem === null ? [] : [backgroundLivenessBannerItem];
+    const resumeCompactionItems =
+      resumeCompactionBannerItem === null ? [] : [resumeCompactionBannerItem];
     const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
@@ -4746,6 +4869,7 @@ function ChatViewContent(props: ChatViewProps) {
         ...urgentSystemItems,
         ...backgroundLivenessItems,
         ...calmSystemItems,
+        ...resumeCompactionItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
       ];
@@ -4754,6 +4878,7 @@ function ChatViewContent(props: ChatViewProps) {
       ...urgentSystemItems,
       ...backgroundLivenessItems,
       ...calmSystemItems,
+      ...resumeCompactionItems,
       ...wokeThreadItems,
       {
         id: `branch-mismatch:${activeBranchMismatchKey}`,
@@ -4803,6 +4928,7 @@ function ChatViewContent(props: ChatViewProps) {
     isRestoringThreadBranch,
     localCheckoutBranchMismatch,
     parkedThreadBannerItem,
+    resumeCompactionBannerItem,
     showBranchMismatchBanner,
     systemComposerBannerItems,
     wokeThreadBannerItem,
@@ -6854,7 +6980,8 @@ function ChatViewContent(props: ChatViewProps) {
                               activeProject?.defaultModelSelection
                             }
                             activeThreadModelSelection={activeThread?.modelSelection}
-                            activeThreadActivities={activeThread?.activities}
+                            activeContextWindow={activeContextWindow}
+                            compactDisabled={compactDisabled}
                             resolvedTheme={resolvedTheme}
                             settings={settings}
                             keybindings={keybindings}
