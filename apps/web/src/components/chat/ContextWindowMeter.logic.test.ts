@@ -118,7 +118,7 @@ describe("hasDismissedResumeCompaction", () => {
           kind: "user-input.resolved",
           payload: {
             answers: {
-              "This session is 2h old and uses 250,000 tokens. Compact it before continuing?":
+              "This session is 2h 0m old and uses 250,000 tokens. Compact it before continuing?":
                 "Don't ask again",
             },
           },
@@ -133,6 +133,21 @@ describe("hasDismissedResumeCompaction", () => {
         {
           kind: "user-input.resolved",
           payload: { answers: { "Show this setup reminder?": "Don't ask again" } },
+        },
+      ]),
+    ).toBe(false);
+  });
+
+  it("ignores unrelated questions that end with Claude's compaction prompt", () => {
+    expect(
+      hasDismissedResumeCompaction([
+        {
+          kind: "user-input.resolved",
+          payload: {
+            answers: {
+              "The build cache is large. Compact it before continuing?": "Don't ask again",
+            },
+          },
         },
       ]),
     ).toBe(false);

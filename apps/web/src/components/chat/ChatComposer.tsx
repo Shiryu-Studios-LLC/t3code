@@ -1988,6 +1988,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const compactThreadContext = useCallback(() => {
     if (
       compactDisabled ||
+      noProviderAvailable ||
       composerSendState.hasSendableContent ||
       activePendingApproval !== null ||
       pendingUserInputs.length > 0 ||
@@ -2010,6 +2011,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerSendState.hasSendableContent,
     isConnecting,
     isSendBusy,
+    noProviderAvailable,
     onSend,
     pendingUserInputs.length,
     phase,
@@ -3543,7 +3545,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
                     onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
-                    compactDisabled={compactDisabled}
+                    compactDisabled={compactDisabled || noProviderAvailable}
                     {...(selectedProvider === "claudeAgent"
                       ? { onCompactContext: compactThreadContext }
                       : {})}

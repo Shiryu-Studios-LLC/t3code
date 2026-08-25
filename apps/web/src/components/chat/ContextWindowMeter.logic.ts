@@ -4,6 +4,8 @@ import { getTriggerDisplayModelName, type ModelEsque } from "./providerIconUtils
 export const CLAUDE_RESUME_COMPACTION_MINUTES = 70;
 export const CLAUDE_RESUME_COMPACTION_TOKENS = 100_000;
 export const CLAUDE_RESUME_COMPACTION_NEVER_ANSWER = "Don't ask again";
+const CLAUDE_RESUME_COMPACTION_QUESTION_PATTERN =
+  /^This session is (?:\d+h \d+m|\d+m) old and uses \d{1,3}(?:,\d{3})* tokens\. Compact it before continuing\?$/u;
 
 export function hasDismissedResumeCompaction(
   activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>,
@@ -17,7 +19,7 @@ export function hasDismissedResumeCompaction(
 
     return Object.entries(answers).some(
       ([question, answer]) =>
-        question.endsWith("Compact it before continuing?") &&
+        CLAUDE_RESUME_COMPACTION_QUESTION_PATTERN.test(question) &&
         answer === CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
     );
   });
