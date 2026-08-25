@@ -136,17 +136,23 @@ export function ContextWindowMeter(props: {
             </div>
           ) : null}
           {onCompact ? (
-            <Button
-              size="xs"
-              variant="outline"
-              className="mt-1 w-full justify-center"
-              disabled={compactDisabled}
-              aria-label={compactDisabledReason ?? "Compact context"}
-              onClick={onCompact}
-            >
-              <Minimize2Icon aria-hidden="true" />
-              Compact context
-            </Button>
+            <>
+              <Button
+                size="xs"
+                variant="outline"
+                className="mt-1 w-full justify-center"
+                disabled={compactDisabled}
+                onClick={onCompact}
+              >
+                <Minimize2Icon aria-hidden="true" />
+                Compact context
+              </Button>
+              {compactDisabled && compactDisabledReason ? (
+                <div className="text-pretty text-secondary-label text-[11px]">
+                  {compactDisabledReason}
+                </div>
+              ) : null}
+            </>
           ) : null}
         </div>
       </PopoverPopup>

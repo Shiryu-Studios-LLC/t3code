@@ -56,6 +56,7 @@ describe("ContextWindowMeter", () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('aria-label="Send or clear your draft before compacting"');
+    expect(markup).toContain(">Send or clear your draft before compacting<");
+    expect(markup).not.toContain('aria-label="Send or clear your draft before compacting"');
   });
 });
