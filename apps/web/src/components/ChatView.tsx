@@ -4819,11 +4819,11 @@ function ChatViewContent(props: ChatViewProps) {
       actions: (
         <Button
           size="xs"
+          variant="outline"
           disabled={compactDisabled}
           onClick={() => {
             if (compactDisabled) return;
             composerRef.current?.compactContext();
-            dismiss();
           }}
         >
           Compact

@@ -38,7 +38,7 @@ export function ContextWindowMeter(props: {
       <PopoverTrigger
         openOnHover
         delay={150}
-        closeDelay={0}
+        closeDelay={onCompact ? 150 : 0}
         render={
           <Button
             size="icon-sm"
