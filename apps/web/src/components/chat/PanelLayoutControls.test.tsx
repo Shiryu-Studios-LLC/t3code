@@ -14,7 +14,6 @@ describe("PanelLayoutControls", () => {
         rightPanelAvailable={false}
         rightPanelOpen={false}
         rightPanelShortcutLabel={null}
-        liveAgentCount={0}
         onToggleTerminal={() => {}}
         onToggleRightPanel={() => {}}
       />,

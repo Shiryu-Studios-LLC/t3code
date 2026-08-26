@@ -177,6 +177,41 @@ describe("rightPanelStore", () => {
     ).toEqual({ byThreadKey: { "env-1:thread-A": panelState } });
   });
 
+  it("drops persisted Swarm surfaces so the right-panel toggle cannot reopen Swarm", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: false,
+            activeSurfaceId: "agents",
+            surfaces: [{ id: "agents", kind: "agents" }],
+          },
+          "env-1:thread-B": {
+            isOpen: true,
+            activeSurfaceId: "agents",
+            surfaces: [
+              { id: "agents", kind: "agents" },
+              { id: "files", kind: "files" },
+            ],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: false,
+          activeSurfaceId: null,
+          surfaces: [],
+        },
+        "env-1:thread-B": {
+          isOpen: true,
+          activeSurfaceId: "files",
+          surfaces: [{ id: "files", kind: "files" }],
+        },
+      },
+    });
+  });
+
   it("drops persisted plan surfaces and does not reopen an empty panel", () => {
     expect(
       migratePersistedRightPanelState({

@@ -140,6 +140,7 @@ import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
+  selectSelectedRightPanelSurface,
   selectThreadRightPanelState,
   type RightPanelSurface,
   updatePullRequestTabStatus,
@@ -1695,6 +1696,9 @@ function ChatViewContent(props: ChatViewProps) {
   const activeRightPanelSurface = useRightPanelStore((state) =>
     selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef),
   );
+  const selectedRightPanelSurface = useRightPanelStore((state) =>
+    selectSelectedRightPanelSurface(state.byThreadKey, activeThreadRef),
+  );
   const [swarmWorkspaceThreadKey, setSwarmWorkspaceThreadKey] = useState<string | null>(null);
   const [pullRequestTabStatuses, setPullRequestTabStatuses] = useState<
     Record<string, PullRequestTabStatus>
@@ -1741,11 +1745,12 @@ function ChatViewContent(props: ChatViewProps) {
   const previewPanelOpen = activeRightPanelKind === "preview" && isPreviewSupportedInRuntime();
   const rightPanelOpen = rightPanelState.isOpen;
   const legacySwarmSurfaceOpen = activeRightPanelSurface?.kind === "agents";
+  const legacySwarmSurfaceSelected = selectedRightPanelSurface?.kind === "agents";
   const isSwarmWorkspace = swarmWorkspaceThreadKey === routeThreadKey || legacySwarmSurfaceOpen;
   // Swarm is a primary workspace mode, not a side-panel surface. Keep the
   // ordinary right panel independent so Browser/Terminal/Diff/Files remain
   // available while the swarm workspace is visible.
-  const inlineRightPanelOpen = rightPanelOpen && !legacySwarmSurfaceOpen;
+  const inlineRightPanelOpen = rightPanelOpen && !legacySwarmSurfaceSelected;
   const canMaximizeRightPanel = inlineRightPanelOpen && !shouldUseRightPanelSheet;
   const rightPanelMaximized =
     canMaximizeRightPanel && maximizedRightPanelThreadKey === routeThreadKey;
@@ -1759,10 +1764,15 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activePreviewState.sessions, activeThreadRef]);
 
   useEffect(() => {
-    if (!activeThreadRef || !legacySwarmSurfaceOpen) return;
-    setSwarmWorkspaceThreadKey(routeThreadKey);
+    if (!activeThreadRef || !legacySwarmSurfaceSelected) return;
+    // Only preserve the old visual intent when the legacy Agents surface was
+    // actually open. A closed/stale selection must be discarded silently;
+    // otherwise Ctrl+Alt+B (right panel) would unexpectedly enter Swarm.
+    if (legacySwarmSurfaceOpen) {
+      setSwarmWorkspaceThreadKey(routeThreadKey);
+    }
     useRightPanelStore.getState().closeSurface(activeThreadRef, "agents");
-  }, [activeThreadRef, legacySwarmSurfaceOpen, routeThreadKey]);
+  }, [activeThreadRef, legacySwarmSurfaceOpen, legacySwarmSurfaceSelected, routeThreadKey]);
 
   useEffect(() => {
     if (!activeThreadRef || !activePreviewMiniPlayer) return;
@@ -3685,12 +3695,24 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const toggleRightPanel = useCallback(() => {
     if (!activeThreadRef) return;
-    if (rightPanelOpen) {
+    if (inlineRightPanelOpen) {
       closePreviewPanel();
       return;
     }
-    useRightPanelStore.getState().toggleVisibility(activeThreadRef);
-  }, [activeThreadRef, closePreviewPanel, rightPanelOpen]);
+    const selectedSurface = selectSelectedRightPanelSurface(
+      useRightPanelStore.getState().byThreadKey,
+      activeThreadRef,
+    );
+    if (selectedSurface && selectedSurface.kind !== "agents") {
+      useRightPanelStore.getState().toggleVisibility(activeThreadRef);
+      return;
+    }
+    // A brand-new right panel needs an actual side-panel surface. Swarm is
+    // deliberately excluded; default to the file browser for project threads.
+    if (activeProject) {
+      useRightPanelStore.getState().open(activeThreadRef, "files");
+    }
+  }, [activeProject, activeThreadRef, closePreviewPanel, inlineRightPanelOpen]);
   const toggleRightPanelMaximized = useCallback(() => {
     if (!canMaximizeRightPanel) return;
     setMaximizedRightPanelThreadKey((threadKey) =>
@@ -6616,11 +6638,6 @@ function ChatViewContent(props: ChatViewProps) {
       rightPanelAvailable={activeProject !== null}
       rightPanelOpen={inlineRightPanelOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
-      // Suppressed while the Agents surface is visible: the roster itself is
-      // on screen, so the toggle badge would be pointing at nothing.
-      liveAgentCount={
-        rightPanelOpen && activeRightPanelSurface?.kind === "agents" ? 0 : agentPanelModel.liveCount
-      }
       onToggleTerminal={toggleTerminalVisibility}
       onToggleRightPanel={toggleRightPanel}
     />
@@ -6762,7 +6779,7 @@ function ChatViewContent(props: ChatViewProps) {
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
-      {rightPanelOpen && !shouldUseRightPanelSheet ? panelLayoutControls : null}
+      {inlineRightPanelOpen && !shouldUseRightPanelSheet ? panelLayoutControls : null}
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-col overflow-x-hidden",
@@ -6777,7 +6794,7 @@ function ChatViewContent(props: ChatViewProps) {
           reserveNativeControls={reserveTitleBarControlInset && !inlineRightPanelOwnsTitleBar}
           className="relative bg-background"
         >
-          {!rightPanelOpen ? panelLayoutControls : null}
+          {!inlineRightPanelOpen ? panelLayoutControls : null}
           <ChatHeader
             {...(!supportsPullRequests || threadRepository === null
               ? {}
@@ -7197,7 +7214,7 @@ function ChatViewContent(props: ChatViewProps) {
         ))}
       </div>
 
-      {!shouldUseRightPanelSheet && rightPanelOpen && activeThreadRef ? (
+      {!shouldUseRightPanelSheet && inlineRightPanelOpen && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
           maximized={rightPanelMaximized}
@@ -7232,7 +7249,7 @@ function ChatViewContent(props: ChatViewProps) {
           {rightPanelContent}
         </RightPanelTabs>
       ) : null}
-      {shouldUseRightPanelSheet && rightPanelOpen && activeThreadRef ? (
+      {shouldUseRightPanelSheet && inlineRightPanelOpen && activeThreadRef ? (
         <RightPanelSheet open onClose={closePreviewPanel}>
           <RightPanelTabs
             mode="sheet"

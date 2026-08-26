@@ -68,7 +68,10 @@ const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v9 removed the "plan" surface kind (plans render inline in the transcript).
 // v10 keys pull-request surfaces by reference instead of a singleton tab.
 // v11 stops persisting the pull-request list's shared panel, so a restart opens the page fresh.
-const RIGHT_PANEL_STORAGE_VERSION = 11;
+// v12 removes the legacy "agents" surface. Swarm is a primary workspace mode,
+// not a right-panel tab, so persisted agent surfaces must never be restored by
+// the right-panel toggle.
+const RIGHT_PANEL_STORAGE_VERSION = 12;
 
 /**
  * The pull-request list's shared panel (see PULL_REQUESTS_PANEL_ID in the route) is session
@@ -263,9 +266,11 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
-                    // Dropped surface kind: plans now render inline in the
-                    // transcript (v9).
-                    if ((surface as { kind?: string }).kind === "plan") return [];
+                    // Dropped surface kinds: plans render inline in the
+                    // transcript (v9), and Swarm/agents is now a primary
+                    // workspace mode rather than a right-panel surface (v12).
+                    const persistedKind = (surface as { kind?: string }).kind;
+                    if (persistedKind === "plan" || persistedKind === "agents") return [];
                     if (surface.kind === "file") {
                       const revealLine =
                         typeof surface.revealLine === "number" &&

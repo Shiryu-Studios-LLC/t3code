@@ -1301,7 +1301,6 @@ function PullRequestsRouteView() {
       rightPanelOpen={rightPanelState.isOpen}
       rightPanelShortcutLabel={null}
       rightPanelUnavailableLabel="Select a pull request first"
-      liveAgentCount={0}
       onToggleTerminal={() => undefined}
       onToggleRightPanel={toggleRightPanel}
     />
