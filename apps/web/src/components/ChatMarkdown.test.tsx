@@ -16,7 +16,42 @@ vi.mock("../state/entities", () => ({
 vi.mock("../editorPreferences", () => ({ useOpenInPreferredEditor: () => vi.fn() }));
 vi.mock("~/lib/openPullRequestLink", () => ({ useOpenChangeRequestLink: () => vi.fn() }));
 
-import ChatMarkdown, { orderedListGutterStyle } from "./ChatMarkdown";
+import ChatMarkdown, { orderedListGutterStyle, resolveMarkdownWorkspacePath } from "./ChatMarkdown";
+
+describe("resolveMarkdownWorkspacePath", () => {
+  it("anchors nested-repository relative links back to the project workspace root", () => {
+    expect(
+      resolveMarkdownWorkspacePath(
+        "docs/RELEASE_RUNBOOK.md",
+        "I:/Shirabi26/shirabi-backend",
+        "I:/Shirabi26",
+      ),
+    ).toBe("shirabi-backend/docs/RELEASE_RUNBOOK.md");
+  });
+
+  it("does not double-prefix paths that are already workspace-relative", () => {
+    expect(
+      resolveMarkdownWorkspacePath(
+        "shirabi-backend/docs/RELEASE_RUNBOOK.md",
+        "I:/Shirabi26/shirabi-backend",
+        "I:/Shirabi26",
+      ),
+    ).toBe("shirabi-backend/docs/RELEASE_RUNBOOK.md");
+  });
+
+  it("leaves project-root and absolute links unchanged", () => {
+    expect(resolveMarkdownWorkspacePath("docs/readme.md", "I:/Shirabi26", "I:/Shirabi26")).toBe(
+      "docs/readme.md",
+    );
+    expect(
+      resolveMarkdownWorkspacePath(
+        "I:/Shirabi26/shirabi-backend/docs/readme.md",
+        "I:/Shirabi26/shirabi-backend",
+        "I:/Shirabi26",
+      ),
+    ).toBe("I:/Shirabi26/shirabi-backend/docs/readme.md");
+  });
+});
 
 describe("orderedListGutterStyle", () => {
   it("leaves the default gutter alone for single-digit lists", () => {

@@ -12,6 +12,7 @@ import {
   planAttachmentClaim,
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPathById,
+  safeAttachmentFileExtension,
   sweepStalePendingAttachments,
 } from "./attachmentStore.ts";
 
@@ -72,6 +73,39 @@ describe("attachmentStore", () => {
         attachmentId,
       });
       expect(resolved).toBe(pngPath);
+    } finally {
+      NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves safe generic file extensions and falls back for unsafe names", () => {
+    expect(safeAttachmentFileExtension("design.final.PDF")).toBe(".pdf");
+    expect(safeAttachmentFileExtension("package.tar.gz")).toBe(".gz");
+    expect(safeAttachmentFileExtension("README")).toBe(".bin");
+    expect(safeAttachmentFileExtension("file.abcdefghijklmnopqrstuvwxyz")).toBe(".bin");
+  });
+
+  it("resolves and claims pending generic file attachments", () => {
+    const attachmentsDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3code-generic-attachment-"),
+    );
+    try {
+      const uuid = "00000000-0000-4000-8000-000000000099";
+      const attachmentId = `pending-${uuid}`;
+      const pendingPath = NodePath.join(attachmentsDir, `${attachmentId}.pdf`);
+      NodeFS.writeFileSync(pendingPath, Buffer.from("pdf bytes"));
+
+      expect(resolveAttachmentPathById({ attachmentsDir, attachmentId })).toBe(pendingPath);
+      const claim = planAttachmentClaim({
+        attachmentsDir,
+        threadId: "thread-files",
+        attachmentId,
+      });
+      expect(claim.ok).toBe(true);
+      if (claim.ok) {
+        expect(claim.currentPath).toBe(pendingPath);
+        expect(claim.finalPath).toBe(NodePath.join(attachmentsDir, `${claim.finalId}.pdf`));
+      }
     } finally {
       NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
     }

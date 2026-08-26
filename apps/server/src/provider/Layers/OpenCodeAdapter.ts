@@ -1,12 +1,19 @@
 import {
+  type AgentTeamMode,
+  DEFAULT_AGENT_TEAM_MAX_CONCURRENCY,
+  MAX_AGENT_TEAM_MAX_CONCURRENCY,
+  MIN_AGENT_TEAM_MAX_CONCURRENCY,
   EventId,
   type OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ProviderSwarmLaunchAgentResolvedInput,
+  type ProviderSwarmLaunchAgentResult,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   ThreadId,
   type ToolLifecycleItemType,
   TurnId,
@@ -20,6 +27,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
+import * as Semaphore from "effect/Semaphore";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -168,6 +176,148 @@ interface OpenCodeTurnSnapshot {
   readonly items: Array<unknown>;
 }
 
+interface OpenCodeChildTaskBinding {
+  readonly taskId: string;
+  readonly childSessionId: string;
+  readonly title: string;
+  readonly description: string;
+  readonly turnId: TurnId | undefined;
+  readonly background: boolean;
+  readonly direct: boolean;
+  readonly workspaceStrategy: "shared" | "worktree";
+  readonly workspacePath: string | undefined;
+  model: string | null;
+  latestResult: string | null;
+  parentTerminal: boolean;
+  childTerminal: boolean;
+}
+
+function openCodeChildRunHandles(binding: OpenCodeChildTaskBinding) {
+  return {
+    runId: binding.childSessionId,
+    ...(binding.workspacePath ? { workspacePath: binding.workspacePath } : {}),
+  };
+}
+
+const MAX_BUFFERED_CHILD_EVENTS_PER_SESSION = 32;
+const MAX_TRACKED_CHILD_SESSIONS = 64;
+const MAX_SEEN_OPENCODE_EVENT_IDS = 4096;
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function openCodeTaskStateMetadata(
+  part: Extract<Part, { type: "tool" }>,
+): Record<string, unknown> | undefined {
+  return asUnknownRecord("metadata" in part.state ? part.state.metadata : undefined);
+}
+
+/**
+ * OpenCode's native task tool stamps the child session id into
+ * state.metadata.sessionId immediately after creating the subagent session.
+ * Keep a few compatibility spellings because older/newer provider builds have
+ * used slightly different casing in exported task payloads.
+ */
+export function openCodeTaskChildSessionId(
+  part: Extract<Part, { type: "tool" }>,
+): string | undefined {
+  const stateMetadata = openCodeTaskStateMetadata(part);
+  const partMetadata = asUnknownRecord(part.metadata);
+  for (const record of [stateMetadata, partMetadata]) {
+    if (!record) continue;
+    for (const key of [
+      "sessionId",
+      "sessionID",
+      "session_id",
+      "childSessionId",
+      "childSessionID",
+      "child_session_id",
+    ] as const) {
+      const value = nonEmptyString(record[key]);
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
+function openCodeTaskIsBackground(part: Extract<Part, { type: "tool" }>): boolean {
+  return openCodeTaskStateMetadata(part)?.background === true;
+}
+
+function openCodeTaskDescription(part: Extract<Part, { type: "tool" }>): string {
+  const input = asUnknownRecord(part.state.input);
+  for (const key of ["description", "prompt", "task", "instruction"] as const) {
+    const value = nonEmptyString(input?.[key]);
+    if (value) return value;
+  }
+  if (part.state.status === "running") {
+    const title = nonEmptyString(part.state.title);
+    if (title) return title;
+  }
+  return "OpenCode subagent";
+}
+
+function openCodeTaskTitle(part: Extract<Part, { type: "tool" }>): string {
+  const title =
+    part.state.status === "running" || part.state.status === "completed"
+      ? nonEmptyString(part.state.title)
+      : undefined;
+  return title ?? openCodeTaskDescription(part).split(/\r?\n/, 1)[0]!.slice(0, 120);
+}
+
+function openCodeTaskModel(part: Extract<Part, { type: "tool" }>): string | null {
+  const model = asUnknownRecord(openCodeTaskStateMetadata(part)?.model);
+  const providerID = nonEmptyString(model?.providerID);
+  const modelID = nonEmptyString(model?.modelID ?? model?.id);
+  return providerID && modelID ? `${providerID}/${modelID}` : null;
+}
+
+function openCodeEventId(event: OpenCodeSubscribedEvent): string | undefined {
+  return "id" in event ? nonEmptyString(event.id) : undefined;
+}
+
+function openCodeSessionParentId(event: OpenCodeSubscribedEvent): string | undefined {
+  if (event.type !== "session.created" && event.type !== "session.updated") return undefined;
+  return nonEmptyString(event.properties.info.parentID);
+}
+
+function openCodeSessionModel(event: OpenCodeSubscribedEvent): string | null {
+  if (event.type !== "session.created" && event.type !== "session.updated") return null;
+  const model = event.properties.info.model;
+  return model?.providerID && model.id ? `${model.providerID}/${model.id}` : null;
+}
+
+function openCodeSessionErrorDiagnostic(error: unknown): string {
+  const record = asUnknownRecord(error);
+  const data = asUnknownRecord(record?.data);
+  const message = nonEmptyString(data?.message) ?? nonEmptyString(record?.message);
+  const statusCode =
+    typeof data?.statusCode === "number"
+      ? data.statusCode
+      : typeof record?.statusCode === "number"
+        ? record.statusCode
+        : undefined;
+  const headers = asUnknownRecord(data?.responseHeaders);
+  const retryAfter =
+    nonEmptyString(headers?.["retry-after"]) ?? nonEmptyString(headers?.["Retry-After"]);
+  return (
+    [
+      statusCode ? `HTTP ${statusCode}` : undefined,
+      message,
+      retryAfter ? `Retry-After ${retryAfter}` : undefined,
+    ]
+      .filter((part): part is string => Boolean(part))
+      .join(": ") || "OpenCode child session failed."
+  );
+}
+
 type OpenCodeSubscribedEvent =
   Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>> extends {
     readonly stream: AsyncIterable<infer TEvent>;
@@ -233,6 +383,11 @@ interface OpenCodeSessionContext {
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
   readonly completedAssistantPartIds: Set<string>;
+  readonly childTaskBySessionId: Map<string, OpenCodeChildTaskBinding>;
+  readonly childSessionIdByTaskId: Map<string, string>;
+  readonly knownChildSessionIds: Set<string>;
+  readonly bufferedChildEvents: Map<string, Array<OpenCodeSubscribedEvent>>;
+  readonly seenOpenCodeEventIds: Set<string>;
   readonly turns: Array<OpenCodeTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
@@ -259,6 +414,45 @@ export interface OpenCodeAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly getAgentTeamSettings?: () => Effect.Effect<{
+    readonly mode: AgentTeamMode;
+    readonly maxConcurrency: number;
+  }>;
+}
+
+export function buildOpenCodeAgentTeamInstruction(input: {
+  readonly mode: AgentTeamMode;
+  readonly maxConcurrency: number;
+}): string | undefined {
+  if (input.mode === "off") {
+    return undefined;
+  }
+
+  const boundedConcurrency = Math.max(
+    MIN_AGENT_TEAM_MAX_CONCURRENCY,
+    Math.min(MAX_AGENT_TEAM_MAX_CONCURRENCY, Math.trunc(input.maxConcurrency)),
+  );
+  const delegationRule =
+    input.mode === "always"
+      ? "For every non-trivial task, delegate at least two independent subtasks to child agents before doing the final integration yourself."
+      : "Before working, decide whether the request has at least two useful independent workstreams. If it does, delegate them to child agents in parallel; if it does not, work normally without manufacturing unnecessary delegation.";
+
+  return [
+    "[T3 Agent Team Mode]",
+    "You are the lead/orchestrator for this conversation. OpenCode child agents are available through the native task/subagent tools.",
+    delegationRule,
+    `Never have more than ${boundedConcurrency} child agents running concurrently. Start independent workers before waiting for earlier workers so genuinely parallel work overlaps.`,
+    "When the native task tool exposes a background option, use background=true for independent workstreams so launching one worker does not block launching the next. After fan-out, keep coordinating and wait for the child completion notifications/results before final integration. If background execution is unavailable, issue independent task calls together whenever the runtime supports parallel tool calls.",
+    "Give each worker a narrow objective, explicit file/area ownership when edits are involved, and ask it to report findings, changes, and verification back to you.",
+    "Avoid having multiple workers edit the same files concurrently unless the provider gives them isolated workspaces. Prefer read-only research/review workers when ownership would overlap.",
+    "Messages beginning with [T3 Swarm Control] are explicit operator controls. Follow the requested launch/message/stop/broadcast/summarize action exactly instead of re-planning it as a normal user task.",
+    "For a Swarm Control launch that asks for an isolated Git worktree, create or use a distinct worktree for that worker before it edits files. If isolation cannot be created safely, report that limitation instead of silently putting concurrent editing agents in the same checkout.",
+    "For a Swarm Control launch, start the requested worker in the background and return control promptly after the launch is confirmed; do not wait for that worker before accepting another operator launch command.",
+    "You remain responsible for integrating worker results, resolving conflicts, running or delegating final verification, and returning one consolidated final answer in this original conversation.",
+    "Do not give the user a final completion answer until every delegated worker has reached a terminal state or you have explicitly handled its failure/cancellation. Recombine successful and partial results yourself; never wait forever on an already-terminal child.",
+    "Do not ask the user to open or manage separate chats for the child agents.",
+    "[/T3 Agent Team Mode]",
+  ].join("\n");
 }
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -563,6 +757,19 @@ const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
     return false;
   }
 
+  // Background child sessions can outlive the parent task invocation on an
+  // externally managed OpenCode server. Stop them explicitly before closing
+  // the parent so a T3 session stop/restart never leaves hidden workers
+  // mutating the workspace after the user believes the run ended.
+  yield* Effect.forEach(
+    [...context.childTaskBySessionId.values()].filter((binding) => !binding.childTerminal),
+    (binding) =>
+      runOpenCodeSdk("session.abort.child", () =>
+        context.client.session.abort({ sessionID: binding.childSessionId }),
+      ).pipe(Effect.ignore({ log: true })),
+    { concurrency: "unbounded", discard: true },
+  );
+
   // Best-effort remote abort. The scope close below tears down the local
   // handles (event-pump fiber, server-exit fiber, event-subscribe fetch),
   // but we still want to tell OpenCode that this session is done.
@@ -603,6 +810,11 @@ export function makeOpenCodeAdapter(
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
     const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, OpenCodeSessionContext>();
+    // Manual launch requests can arrive concurrently over separate RPCs. Keep
+    // the capacity check and child registration in one critical section so
+    // two callers cannot both observe the final free slot and exceed the
+    // configured (and globally bounded) agent ceiling.
+    const swarmLaunchMutex = yield* Semaphore.make(1);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
       Effect.mapError(
         (cause) =>
@@ -799,12 +1011,622 @@ export function makeOpenCodeAdapter(
       }
     });
 
+    const emitChildTaskProgress = Effect.fn("emitChildTaskProgress")(function* (
+      context: OpenCodeSessionContext,
+      binding: OpenCodeChildTaskBinding,
+      input: {
+        readonly summary?: string;
+        readonly lastToolName?: string;
+        readonly error?: string;
+        readonly status?: "pending" | "running" | "waiting" | "idle";
+        readonly typedUsage?: {
+          readonly totalTokens: number;
+          readonly inputTokens?: number;
+          readonly cachedInputTokens?: number;
+          readonly outputTokens?: number;
+          readonly reasoningOutputTokens?: number;
+          readonly toolUses?: number;
+          readonly durationMs?: number;
+        };
+        readonly createdAt?: string;
+        readonly raw?: unknown;
+      },
+    ) {
+      if (binding.childTerminal) return;
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId: binding.turnId,
+          createdAt: input.createdAt,
+          raw: input.raw,
+        })),
+        type: "task.progress",
+        payload: {
+          taskId: RuntimeTaskId.make(binding.taskId),
+          taskType: "opencode_subagent",
+          description: binding.description,
+          title: binding.title,
+          role: "OpenCode subagent",
+          status: input.status ?? "running",
+          runHandles: openCodeChildRunHandles(binding),
+          ...(binding.model ? { model: binding.model } : {}),
+          ...(input.summary ? { summary: input.summary } : {}),
+          ...(input.lastToolName ? { lastToolName: input.lastToolName } : {}),
+          ...(input.error ? { error: input.error } : {}),
+          ...(input.typedUsage ? { typedUsage: input.typedUsage } : {}),
+        },
+      });
+    });
+
+    const emitChildToolProgress = Effect.fn("emitChildToolProgress")(function* (
+      context: OpenCodeSessionContext,
+      binding: OpenCodeChildTaskBinding,
+      input: {
+        readonly toolName: string;
+        readonly toolUseId?: string;
+        readonly summary?: string;
+        readonly createdAt?: string;
+        readonly raw?: unknown;
+      },
+    ) {
+      if (binding.childTerminal) return;
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId: binding.turnId,
+          createdAt: input.createdAt,
+          raw: input.raw,
+        })),
+        type: "tool.progress",
+        payload: {
+          taskId: RuntimeTaskId.make(binding.taskId),
+          toolName: input.toolName,
+          ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
+          ...(input.summary ? { summary: input.summary } : {}),
+        },
+      });
+    });
+
+    const settleChildTask = Effect.fn("settleChildTask")(function* (
+      context: OpenCodeSessionContext,
+      binding: OpenCodeChildTaskBinding,
+      input: {
+        readonly status: "completed" | "failed" | "stopped";
+        readonly summary?: string;
+        readonly createdAt?: string;
+        readonly raw?: unknown;
+      },
+    ) {
+      if (binding.childTerminal) return;
+      binding.childTerminal = true;
+      const updatedStatus =
+        input.status === "completed"
+          ? ("completed" as const)
+          : input.status === "failed"
+            ? ("failed" as const)
+            : ("interrupted" as const);
+      if (binding.direct) {
+        yield* emit({
+          ...(yield* buildEventBase({
+            threadId: context.session.threadId,
+            turnId: binding.turnId,
+            createdAt: input.createdAt,
+            raw: input.raw,
+          })),
+          type: "task.completed",
+          payload: {
+            taskId: RuntimeTaskId.make(binding.taskId),
+            taskType: "opencode_subagent",
+            status: input.status,
+            title: binding.title,
+            role: "OpenCode subagent",
+            runHandles: openCodeChildRunHandles(binding),
+            ...(binding.model ? { model: binding.model } : {}),
+            ...(binding.latestResult || input.summary
+              ? { summary: binding.latestResult ?? input.summary }
+              : {}),
+          },
+        });
+        return;
+      }
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId: binding.turnId,
+          createdAt: input.createdAt,
+          raw: input.raw,
+        })),
+        // Child idle/error is authoritative lifecycle state, but the parent
+        // task wrapper still owns the final task result text. Use an update
+        // here so a later parent task.completed can enrich the card with the
+        // actual returned result instead of being masked by a generic child
+        // completion summary.
+        type: "task.updated",
+        payload: {
+          taskId: RuntimeTaskId.make(binding.taskId),
+          taskType: "opencode_subagent",
+          status: updatedStatus,
+          description: binding.description,
+          title: binding.title,
+          role: "OpenCode subagent",
+          runHandles: openCodeChildRunHandles(binding),
+          ...(binding.model ? { model: binding.model } : {}),
+          ...(updatedStatus === "failed" && input.summary ? { error: input.summary } : {}),
+          ...(input.createdAt ? { endedAt: input.createdAt } : {}),
+        },
+      });
+    });
+
+    const rememberSeenOpenCodeEvent = (
+      context: OpenCodeSessionContext,
+      event: OpenCodeSubscribedEvent,
+    ) => {
+      const eventId = openCodeEventId(event);
+      if (!eventId) return false;
+      if (context.seenOpenCodeEventIds.has(eventId)) return true;
+      context.seenOpenCodeEventIds.add(eventId);
+      if (context.seenOpenCodeEventIds.size > MAX_SEEN_OPENCODE_EVENT_IDS) {
+        const oldest = context.seenOpenCodeEventIds.values().next().value;
+        if (typeof oldest === "string") context.seenOpenCodeEventIds.delete(oldest);
+      }
+      return false;
+    };
+
+    const bufferChildEvent = (
+      context: OpenCodeSessionContext,
+      childSessionId: string,
+      event: OpenCodeSubscribedEvent,
+    ) => {
+      if (!context.knownChildSessionIds.has(childSessionId)) return;
+      const existing = context.bufferedChildEvents.get(childSessionId) ?? [];
+      existing.push(event);
+      if (existing.length > MAX_BUFFERED_CHILD_EVENTS_PER_SESSION) {
+        existing.splice(0, existing.length - MAX_BUFFERED_CHILD_EVENTS_PER_SESSION);
+      }
+      context.bufferedChildEvents.set(childSessionId, existing);
+      if (context.bufferedChildEvents.size > MAX_TRACKED_CHILD_SESSIONS) {
+        const oldest = context.bufferedChildEvents.keys().next().value;
+        if (typeof oldest === "string" && oldest !== childSessionId) {
+          context.bufferedChildEvents.delete(oldest);
+        }
+      }
+    };
+
+    const handleChildSubscribedEvent = Effect.fn("handleChildSubscribedEvent")(function* (
+      context: OpenCodeSessionContext,
+      binding: OpenCodeChildTaskBinding,
+      event: OpenCodeSubscribedEvent,
+    ) {
+      const createdAt = yield* nowIso;
+      switch (event.type) {
+        case "session.created":
+        case "session.updated": {
+          binding.model = openCodeSessionModel(event) ?? binding.model;
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "Child session active",
+            createdAt,
+            raw: event,
+          });
+          break;
+        }
+        case "session.status": {
+          if (event.properties.status.type === "retry") {
+            yield* emitChildTaskProgress(context, binding, {
+              summary: "Retrying provider request",
+              error: event.properties.status.message,
+              status: "running",
+              createdAt,
+              raw: event,
+            });
+          } else if (event.properties.status.type === "busy") {
+            yield* emitChildTaskProgress(context, binding, {
+              summary: "Working",
+              status: "running",
+              createdAt,
+              raw: event,
+            });
+          } else if (event.properties.status.type === "idle") {
+            yield* settleChildTask(context, binding, {
+              status: "completed",
+              summary: "Child session completed",
+              createdAt,
+              raw: event,
+            });
+          }
+          break;
+        }
+        case "session.idle": {
+          yield* settleChildTask(context, binding, {
+            status: "completed",
+            summary: "Child session completed",
+            createdAt,
+            raw: event,
+          });
+          break;
+        }
+        case "session.error": {
+          yield* settleChildTask(context, binding, {
+            status: "failed",
+            summary: openCodeSessionErrorDiagnostic(event.properties.error),
+            createdAt,
+            raw: event,
+          });
+          break;
+        }
+        case "session.deleted": {
+          yield* settleChildTask(context, binding, {
+            status: "stopped",
+            summary: "Child session ended before the parent task settled",
+            createdAt,
+            raw: event,
+          });
+          break;
+        }
+        case "message.updated": {
+          const info = event.properties.info;
+          if (info.role === "assistant") {
+            const error = info.error ? openCodeSessionErrorDiagnostic(info.error) : undefined;
+            yield* emitChildTaskProgress(context, binding, {
+              summary: error ? "Provider reported an error" : "Generating response",
+              ...(error ? { error } : {}),
+              createdAt,
+              raw: event,
+            });
+          }
+          break;
+        }
+        case "message.part.delta": {
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "Generating response",
+            createdAt,
+            raw: event,
+          });
+          break;
+        }
+        case "message.part.updated": {
+          const part = event.properties.part;
+          if (part.type === "tool") {
+            yield* emitChildToolProgress(context, binding, {
+              toolName: part.tool,
+              toolUseId: part.callID,
+              summary:
+                part.state.status === "error"
+                  ? "Tool failed; agent may recover"
+                  : part.state.status === "completed"
+                    ? "Tool completed"
+                    : "Tool running",
+              createdAt,
+              raw: event,
+            });
+            yield* emitChildTaskProgress(context, binding, {
+              summary:
+                part.state.status === "error"
+                  ? `Tool ${part.tool} failed; continuing`
+                  : `Using ${part.tool}`,
+              lastToolName: part.tool,
+              createdAt,
+              raw: event,
+            });
+          } else if (part.type === "step-finish") {
+            const tokens = part.tokens;
+            yield* emitChildTaskProgress(context, binding, {
+              summary: "Completed an agent step",
+              typedUsage: {
+                totalTokens:
+                  tokens.total ??
+                  tokens.input +
+                    tokens.output +
+                    tokens.reasoning +
+                    tokens.cache.read +
+                    tokens.cache.write,
+                inputTokens: tokens.input,
+                cachedInputTokens: tokens.cache.read,
+                outputTokens: tokens.output,
+                reasoningOutputTokens: tokens.reasoning,
+              },
+              createdAt,
+              raw: event,
+            });
+          } else if (part.type === "retry") {
+            yield* emitChildTaskProgress(context, binding, {
+              summary: `Retrying provider request (attempt ${part.attempt})`,
+              error: openCodeSessionErrorDiagnostic(part.error),
+              createdAt,
+              raw: event,
+            });
+          } else if (part.type === "reasoning") {
+            yield* emitChildTaskProgress(context, binding, {
+              summary: "Reasoning",
+              createdAt,
+              raw: event,
+            });
+          } else if (part.type === "text") {
+            const resultText = trimText(part.text);
+            if (resultText) binding.latestResult = resultText;
+            yield* emitChildTaskProgress(context, binding, {
+              summary: "Preparing result",
+              createdAt,
+              raw: event,
+            });
+          }
+          break;
+        }
+        case "permission.asked": {
+          context.pendingPermissions.set(event.properties.id, event.properties);
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "Waiting for permission",
+            status: "waiting",
+            createdAt,
+            raw: event,
+          });
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId: binding.turnId,
+              requestId: event.properties.id,
+              createdAt,
+              raw: event,
+            })),
+            type: "request.opened",
+            payload: {
+              requestType: mapPermissionToRequestType(event.properties.permission),
+              detail: `${binding.title}: ${
+                event.properties.patterns.length > 0
+                  ? event.properties.patterns.join("\n")
+                  : event.properties.permission
+              }`,
+              args: event.properties.metadata,
+            },
+          });
+          break;
+        }
+        case "permission.replied": {
+          context.pendingPermissions.delete(event.properties.requestID);
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId: binding.turnId,
+              requestId: event.properties.requestID,
+              createdAt,
+              raw: event,
+            })),
+            type: "request.resolved",
+            payload: {
+              requestType: "unknown",
+              decision: mapPermissionDecision(event.properties.reply),
+            },
+          });
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "Permission resolved",
+            status: "running",
+            createdAt,
+            raw: event,
+          });
+          break;
+        }
+        case "question.asked": {
+          context.pendingQuestions.set(event.properties.id, event.properties);
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "Waiting for your answer",
+            status: "waiting",
+            createdAt,
+            raw: event,
+          });
+          const questions = normalizeQuestionRequest(event.properties).map((question) => ({
+            ...question,
+            header: `${binding.title}: ${question.header}`.slice(0, 120),
+          }));
+          yield* emit({
+            ...(yield* buildEventBase({
+              threadId: context.session.threadId,
+              turnId: binding.turnId,
+              requestId: event.properties.id,
+              createdAt,
+              raw: event,
+            })),
+            type: "user-input.requested",
+            payload: { questions },
+          });
+          break;
+        }
+        case "question.replied":
+        case "question.rejected": {
+          context.pendingQuestions.delete(event.properties.requestID);
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "User input resolved",
+            status: "running",
+            createdAt,
+            raw: event,
+          });
+          break;
+        }
+        case "session.next.step.started": {
+          const model = event.properties.model;
+          binding.model = `${model.providerID}/${model.id}`;
+          const eventAt = isoFromEpochMs(event.properties.timestamp);
+          yield* emitChildTaskProgress(context, binding, {
+            summary: `Agent step started (${event.properties.agent})`,
+            ...(eventAt ? { createdAt: eventAt } : {}),
+            raw: event,
+          });
+          break;
+        }
+        case "session.next.step.ended": {
+          const tokens = event.properties.tokens;
+          const eventAt = isoFromEpochMs(event.properties.timestamp);
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "Agent step completed",
+            typedUsage: {
+              totalTokens:
+                tokens.input +
+                tokens.output +
+                tokens.reasoning +
+                tokens.cache.read +
+                tokens.cache.write,
+              inputTokens: tokens.input,
+              cachedInputTokens: tokens.cache.read,
+              outputTokens: tokens.output,
+              reasoningOutputTokens: tokens.reasoning,
+            },
+            ...(eventAt ? { createdAt: eventAt } : {}),
+            raw: event,
+          });
+          break;
+        }
+        case "session.next.step.failed": {
+          const eventAt = isoFromEpochMs(event.properties.timestamp);
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "Agent step failed; waiting for OpenCode to recover or terminate",
+            error: event.properties.error.message,
+            ...(eventAt ? { createdAt: eventAt } : {}),
+            raw: event,
+          });
+          break;
+        }
+        case "session.next.reasoning.started":
+        case "session.next.reasoning.delta":
+        case "session.next.reasoning.ended": {
+          const eventAt = isoFromEpochMs(event.properties.timestamp);
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "Reasoning",
+            ...(eventAt ? { createdAt: eventAt } : {}),
+            raw: event,
+          });
+          break;
+        }
+        case "session.next.text.started":
+        case "session.next.text.delta":
+        case "session.next.text.ended": {
+          const eventAt = isoFromEpochMs(event.properties.timestamp);
+          yield* emitChildTaskProgress(context, binding, {
+            summary: "Generating response",
+            ...(eventAt ? { createdAt: eventAt } : {}),
+            raw: event,
+          });
+          break;
+        }
+        case "session.next.tool.called":
+        case "session.next.tool.progress":
+        case "session.next.tool.success":
+        case "session.next.tool.failed": {
+          const properties = event.properties;
+          const toolName =
+            event.type === "session.next.tool.called" ? event.properties.tool : "Tool";
+          const eventAt = isoFromEpochMs(properties.timestamp);
+          yield* emitChildToolProgress(context, binding, {
+            toolName,
+            toolUseId: properties.callID,
+            summary:
+              event.type === "session.next.tool.failed"
+                ? "Tool failed; agent may recover"
+                : event.type === "session.next.tool.success"
+                  ? "Tool completed"
+                  : "Tool activity",
+            ...(eventAt ? { createdAt: eventAt } : {}),
+            raw: event,
+          });
+          yield* emitChildTaskProgress(context, binding, {
+            summary: `Tool activity: ${toolName}`,
+            lastToolName: toolName,
+            ...(eventAt ? { createdAt: eventAt } : {}),
+            raw: event,
+          });
+          break;
+        }
+        case "session.next.retried": {
+          const eventAt = isoFromEpochMs(event.properties.timestamp);
+          yield* emitChildTaskProgress(context, binding, {
+            summary: `Retrying provider request (attempt ${event.properties.attempt})`,
+            error: openCodeSessionErrorDiagnostic(event.properties.error),
+            ...(eventAt ? { createdAt: eventAt } : {}),
+            raw: event,
+          });
+          break;
+        }
+        default:
+          break;
+      }
+    });
+
+    const registerChildTaskBinding = Effect.fn("registerChildTaskBinding")(function* (
+      context: OpenCodeSessionContext,
+      part: Extract<Part, { type: "tool" }>,
+      turnId: TurnId | undefined,
+    ) {
+      if (toToolLifecycleItemType(part.tool) !== "collab_agent_tool_call") return;
+      const childSessionId = openCodeTaskChildSessionId(part);
+      if (!childSessionId) return;
+      context.knownChildSessionIds.add(childSessionId);
+      const existing = context.childTaskBySessionId.get(childSessionId);
+      const binding: OpenCodeChildTaskBinding = existing ?? {
+        taskId: part.callID,
+        childSessionId,
+        title: openCodeTaskTitle(part),
+        description: openCodeTaskDescription(part),
+        turnId,
+        background: openCodeTaskIsBackground(part),
+        direct: false,
+        workspaceStrategy: "shared",
+        workspacePath: undefined,
+        model: openCodeTaskModel(part),
+        latestResult: null,
+        parentTerminal: false,
+        childTerminal: false,
+      };
+      binding.model = openCodeTaskModel(part) ?? binding.model;
+      if (part.state.status === "completed" || part.state.status === "error") {
+        binding.parentTerminal = true;
+      }
+      context.childTaskBySessionId.set(childSessionId, binding);
+      context.childSessionIdByTaskId.set(part.callID, childSessionId);
+      const buffered = context.bufferedChildEvents.get(childSessionId) ?? [];
+      context.bufferedChildEvents.delete(childSessionId);
+      yield* Effect.forEach(buffered, (bufferedEvent) =>
+        handleChildSubscribedEvent(context, binding, bufferedEvent),
+      );
+    });
+
     const handleSubscribedEvent = Effect.fn("handleSubscribedEvent")(function* (
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
     ) {
       const payloadSessionId = openCodeEventSessionId(event);
+      if (rememberSeenOpenCodeEvent(context, event)) {
+        return;
+      }
+
+      const sessionParentId = openCodeSessionParentId(event);
+      if (
+        payloadSessionId &&
+        payloadSessionId !== context.openCodeSessionId &&
+        sessionParentId === context.openCodeSessionId
+      ) {
+        context.knownChildSessionIds.add(payloadSessionId);
+        const existingBinding = context.childTaskBySessionId.get(payloadSessionId);
+        if (existingBinding) {
+          existingBinding.model = openCodeSessionModel(event) ?? existingBinding.model;
+        }
+      }
+
       if (payloadSessionId !== context.openCodeSessionId) {
+        if (!payloadSessionId) return;
+        const binding = context.childTaskBySessionId.get(payloadSessionId);
+        if (binding) {
+          yield* writeNativeEventBestEffort(context.session.threadId, {
+            observedAt: yield* nowIso,
+            event: {
+              provider: PROVIDER,
+              threadId: context.session.threadId,
+              providerThreadId: payloadSessionId,
+              childTaskId: binding.taskId,
+              type: event.type,
+              payload: event,
+            },
+          });
+          yield* handleChildSubscribedEvent(context, binding, event);
+        } else {
+          bufferChildEvent(context, payloadSessionId, event);
+        }
         return;
       }
 
@@ -915,6 +1737,7 @@ export function makeOpenCodeAdapter(
           }
 
           if (part.type === "tool") {
+            yield* registerChildTaskBinding(context, part, turnId);
             const itemType = toToolLifecycleItemType(part.tool);
             const title =
               part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
@@ -1398,6 +2221,11 @@ export function makeOpenCodeAdapter(
           emittedTextByPartId: new Map(),
           messageRoleById: new Map(),
           completedAssistantPartIds: new Set(),
+          childTaskBySessionId: new Map(),
+          childSessionIdByTaskId: new Map(),
+          knownChildSessionIds: new Set(),
+          bufferedChildEvents: new Map(),
+          seenOpenCodeEventIds: new Set(),
           turns: [],
           activeTurnId: undefined,
           activeAgent: undefined,
@@ -1405,6 +2233,102 @@ export function makeOpenCodeAdapter(
           stopped: yield* Ref.make(false),
           sessionScope: started.sessionScope,
         };
+
+        // The parent OpenCode session is durable but T3's child-session
+        // correlation maps are in-memory. Rebuild them when adopting a
+        // persisted session so a desktop/server restart does not turn active
+        // subagents into orphaned/stale cards. The task tool stores the child
+        // session id in its persisted part metadata.
+        if (!started.created) {
+          yield* runOpenCodeSdk("session.messages.child-recovery", () =>
+            started.client.session.messages({ sessionID: started.openCodeSession.id }),
+          ).pipe(
+            Effect.flatMap((response) =>
+              Effect.forEach(
+                response.data ?? [],
+                (message) =>
+                  Effect.forEach(
+                    message.parts,
+                    (part) =>
+                      part.type === "tool"
+                        ? registerChildTaskBinding(context, part, undefined)
+                        : Effect.void,
+                    { discard: true },
+                  ),
+                { discard: true },
+              ),
+            ),
+            // Recovery is observability/liveness enrichment. A damaged or
+            // temporarily unavailable history endpoint must not prevent the
+            // parent conversation itself from resuming.
+            Effect.catchCause((cause) =>
+              Effect.logWarning("OpenCode child-session recovery skipped", {
+                threadId: input.threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+
+          // Direct/manual Swarm launches are OpenCode child sessions but do
+          // not have a parent task-tool part. Recover them from OpenCode's
+          // durable child inventory so their cards, capacity accounting, and
+          // native message/stop controls survive a T3 Studio restart.
+          yield* runOpenCodeSdk("session.children.swarm-recovery", () =>
+            started.client.session.children({ sessionID: started.openCodeSession.id }),
+          ).pipe(
+            Effect.flatMap((response) =>
+              Effect.forEach(
+                response.data ?? [],
+                (child) => {
+                  if (context.knownChildSessionIds.has(child.id)) return Effect.void;
+                  const binding: OpenCodeChildTaskBinding = {
+                    taskId: `opencode-swarm-${child.id}`,
+                    childSessionId: child.id,
+                    title: child.title || "Recovered swarm agent",
+                    description: child.title || "Recovered swarm agent",
+                    turnId: undefined,
+                    background: true,
+                    direct: true,
+                    workspaceStrategy: "shared",
+                    workspacePath: child.directory,
+                    model: null,
+                    latestResult: null,
+                    parentTerminal: true,
+                    childTerminal: false,
+                  };
+                  context.knownChildSessionIds.add(binding.childSessionId);
+                  context.childTaskBySessionId.set(binding.childSessionId, binding);
+                  context.childSessionIdByTaskId.set(binding.taskId, binding.childSessionId);
+                  return runOpenCodeSdk("session.promptAsync.swarm-recovery", () =>
+                    started.client.session.promptAsync({
+                      sessionID: binding.childSessionId,
+                      parts: [
+                        {
+                          type: "text" as const,
+                          text: "T3 Studio restarted while you were working. Resume from the persisted conversation and current workspace. Continue only the remaining work, verify it, and report the result without repeating completed work.",
+                        },
+                      ],
+                    }),
+                  ).pipe(
+                    Effect.andThen(
+                      emitChildTaskProgress(context, binding, {
+                        summary: "Recovered after T3 Studio restart",
+                        status: "running",
+                      }),
+                    ),
+                  );
+                },
+                { discard: true },
+              ),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("OpenCode direct swarm recovery skipped", {
+                threadId: input.threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+        }
         sessions.set(input.threadId, context);
         yield* startEventPump(context);
 
@@ -1456,6 +2380,18 @@ export function makeOpenCodeAdapter(
       }
 
       const text = input.input?.trim();
+      const agentTeamSettings = options?.getAgentTeamSettings
+        ? yield* options.getAgentTeamSettings()
+        : {
+            mode: "off" as const,
+            maxConcurrency: DEFAULT_AGENT_TEAM_MAX_CONCURRENCY,
+          };
+      const agentTeamInstruction = buildOpenCodeAgentTeamInstruction(agentTeamSettings);
+      const providerText = agentTeamInstruction
+        ? [agentTeamInstruction, text ? `User request:\n${text}` : undefined]
+            .filter((part): part is string => part !== undefined)
+            .join("\n\n")
+        : text;
       const fileParts = toOpenCodeFileParts({
         attachments: input.attachments,
         resolveAttachmentPath: (attachment) =>
@@ -1464,7 +2400,7 @@ export function makeOpenCodeAdapter(
             attachment,
           }),
       });
-      if ((!text || text.length === 0) && fileParts.length === 0) {
+      if ((!providerText || providerText.length === 0) && fileParts.length === 0) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
           operation: "sendTurn",
@@ -1505,7 +2441,10 @@ export function makeOpenCodeAdapter(
           model: parsedModel,
           ...(context.activeAgent ? { agent: context.activeAgent } : {}),
           ...(context.activeVariant ? { variant: context.activeVariant } : {}),
-          parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
+          parts: [
+            ...(providerText ? [{ type: "text" as const, text: providerText }] : []),
+            ...fileParts,
+          ],
         }),
       ).pipe(
         Effect.mapError(toRequestError),
@@ -1555,17 +2494,206 @@ export function makeOpenCodeAdapter(
       };
     });
 
+    const findSwarmBinding = (
+      context: OpenCodeSessionContext,
+      agentId: string,
+    ): OpenCodeChildTaskBinding | undefined => {
+      const childSessionId = context.childSessionIdByTaskId.get(agentId);
+      if (childSessionId) return context.childTaskBySessionId.get(childSessionId);
+      return [...context.childTaskBySessionId.values()].find(
+        (binding) => binding.taskId === agentId,
+      );
+    };
+
+    const launchSwarmAgentUnlocked: NonNullable<OpenCodeAdapterShape["launchSwarmAgent"]> =
+      Effect.fn("launchSwarmAgentUnlocked")(function* (
+        input: ProviderSwarmLaunchAgentResolvedInput,
+      ) {
+        const context = yield* ensureSessionContext(sessions, input.threadId);
+        const agentTeamSettings = options?.getAgentTeamSettings
+          ? yield* options.getAgentTeamSettings()
+          : {
+              mode: "auto" as const,
+              maxConcurrency: DEFAULT_AGENT_TEAM_MAX_CONCURRENCY,
+            };
+        const maxConcurrency = Math.max(
+          MIN_AGENT_TEAM_MAX_CONCURRENCY,
+          Math.min(MAX_AGENT_TEAM_MAX_CONCURRENCY, Math.trunc(agentTeamSettings.maxConcurrency)),
+        );
+        const liveCount = [...context.childTaskBySessionId.values()].filter(
+          (binding) => !binding.childTerminal,
+        ).length;
+        if (liveCount >= maxConcurrency) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "launchSwarmAgent",
+            issue: `The swarm already has ${liveCount} live agents; the configured limit is ${maxConcurrency}.`,
+          });
+        }
+
+        const requestedTitle = input.title?.trim();
+        const title =
+          requestedTitle ?? input.task.trim().split(/\r?\n/, 1)[0]!.slice(0, 120) ?? "Swarm agent";
+        const directory = input.directory ?? context.directory;
+        const childSession = yield* runOpenCodeSdk("session.create.swarm-child", () =>
+          context.client.session.create({
+            parentID: context.openCodeSessionId,
+            directory,
+            title,
+          }),
+        ).pipe(Effect.mapError(toRequestError));
+        if (!childSession.data?.id) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session.create.swarm-child",
+            detail: "OpenCode returned no child session id.",
+          });
+        }
+
+        // A deterministic id lets a fresh adapter reconstruct the same routing
+        // key from OpenCode's durable parent/child session inventory.
+        const taskId = `opencode-swarm-${childSession.data.id}`;
+        const binding: OpenCodeChildTaskBinding = {
+          taskId,
+          childSessionId: childSession.data.id,
+          title,
+          description: input.task,
+          turnId: undefined,
+          background: true,
+          direct: true,
+          workspaceStrategy: input.workspaceStrategy,
+          workspacePath: input.directory,
+          model: input.modelSelection?.model ?? null,
+          latestResult: null,
+          parentTerminal: true,
+          childTerminal: false,
+        };
+        context.knownChildSessionIds.add(binding.childSessionId);
+        context.childTaskBySessionId.set(binding.childSessionId, binding);
+        context.childSessionIdByTaskId.set(binding.taskId, binding.childSessionId);
+
+        yield* emitChildTaskProgress(context, binding, {
+          summary:
+            input.workspaceStrategy === "worktree" && input.directory
+              ? `Started in isolated worktree ${input.directory}`
+              : "Started by swarm operator",
+          status: "running",
+        });
+
+        const parsedModel = input.modelSelection
+          ? parseOpenCodeModelSlug(input.modelSelection.model)
+          : undefined;
+        if (input.modelSelection && !parsedModel) {
+          yield* settleChildTask(context, binding, {
+            status: "failed",
+            summary: "OpenCode model selection must use the 'provider/model' format.",
+          });
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "launchSwarmAgent",
+            issue: "OpenCode model selection must use the 'provider/model' format.",
+          });
+        }
+
+        yield* runOpenCodeSdk("session.promptAsync.swarm-child", () =>
+          context.client.session.promptAsync({
+            sessionID: binding.childSessionId,
+            ...(parsedModel ? { model: parsedModel } : {}),
+            parts: [{ type: "text" as const, text: input.task }],
+          }),
+        ).pipe(
+          Effect.mapError(toRequestError),
+          Effect.tapError((error) =>
+            settleChildTask(context, binding, {
+              status: "failed",
+              summary: error.detail,
+            }),
+          ),
+        );
+
+        return {
+          agentId: binding.taskId,
+          sessionId: binding.childSessionId,
+          title: binding.title,
+          workspaceStrategy: binding.workspaceStrategy,
+          ...(binding.workspacePath ? { workspacePath: binding.workspacePath } : {}),
+        } satisfies ProviderSwarmLaunchAgentResult;
+      });
+    const launchSwarmAgent: NonNullable<OpenCodeAdapterShape["launchSwarmAgent"]> = (input) =>
+      swarmLaunchMutex.withPermits(1)(launchSwarmAgentUnlocked(input));
+
+    const messageSwarmAgent: NonNullable<OpenCodeAdapterShape["messageSwarmAgent"]> = Effect.fn(
+      "messageSwarmAgent",
+    )(function* (input) {
+      const context = yield* ensureSessionContext(sessions, input.threadId);
+      const binding = findSwarmBinding(context, input.agentId);
+      if (!binding || binding.childTerminal) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "messageSwarmAgent",
+          issue: `No live swarm agent '${input.agentId}' exists in this thread.`,
+        });
+      }
+      yield* runOpenCodeSdk("session.promptAsync.swarm-message", () =>
+        context.client.session.promptAsync({
+          sessionID: binding.childSessionId,
+          parts: [{ type: "text" as const, text: input.message }],
+        }),
+      ).pipe(Effect.mapError(toRequestError));
+      yield* emitChildTaskProgress(context, binding, {
+        summary: "Operator instruction sent",
+        status: "running",
+      });
+    });
+
+    const stopSwarmAgent: NonNullable<OpenCodeAdapterShape["stopSwarmAgent"]> = Effect.fn(
+      "stopSwarmAgent",
+    )(function* (input) {
+      const context = yield* ensureSessionContext(sessions, input.threadId);
+      const binding = findSwarmBinding(context, input.agentId);
+      if (!binding || binding.childTerminal) return;
+      yield* runOpenCodeSdk("session.abort.swarm-child", () =>
+        context.client.session.abort({ sessionID: binding.childSessionId }),
+      ).pipe(Effect.mapError(toRequestError));
+      yield* settleChildTask(context, binding, {
+        status: "stopped",
+        summary: "Stopped by swarm operator",
+      });
+    });
+
     const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
       function* (threadId, turnId) {
         const context = yield* ensureSessionContext(sessions, threadId);
+        const interruptedTurnId = turnId ?? context.activeTurnId;
         yield* runOpenCodeSdk("session.abort", () =>
           context.client.session.abort({ sessionID: context.openCodeSessionId }),
         ).pipe(Effect.mapError(toRequestError));
-        if (turnId ?? context.activeTurnId) {
+        const liveChildren = [...context.childTaskBySessionId.values()].filter(
+          (binding) =>
+            !binding.childTerminal &&
+            (interruptedTurnId === undefined || binding.turnId === interruptedTurnId),
+        );
+        yield* Effect.forEach(
+          liveChildren,
+          (binding) =>
+            runOpenCodeSdk("session.abort.child", () =>
+              context.client.session.abort({ sessionID: binding.childSessionId }),
+            ).pipe(
+              Effect.ignore({ log: true }),
+              Effect.andThen(
+                settleChildTask(context, binding, {
+                  status: "stopped",
+                  summary: "Interrupted with the parent turn",
+                }),
+              ),
+            ),
+          { concurrency: "unbounded", discard: true },
+        );
+        if (interruptedTurnId) {
           yield* emit({
             ...(yield* buildEventBase({
               threadId,
-              turnId: turnId ?? context.activeTurnId,
+              turnId: interruptedTurnId,
             })),
             type: "turn.aborted",
             payload: {
@@ -1722,6 +2850,9 @@ export function makeOpenCodeAdapter(
       },
       startSession,
       sendTurn,
+      launchSwarmAgent,
+      messageSwarmAgent,
+      stopSwarmAgent,
       interruptTurn,
       respondToRequest,
       respondToUserInput,

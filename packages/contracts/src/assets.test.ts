@@ -2,7 +2,10 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import { AttachmentCreateUploadUrlInput } from "./assets.ts";
-import { PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "./orchestration.ts";
+import {
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+} from "./orchestration.ts";
 
 const isUploadInput = Schema.is(AttachmentCreateUploadUrlInput);
 
@@ -15,6 +18,18 @@ const uploadInput = {
 describe("AttachmentCreateUploadUrlInput", () => {
   it("accepts supported image attachments", () => {
     expect(isUploadInput(uploadInput)).toBe(true);
+    expect(isUploadInput({ ...uploadInput, type: "image" })).toBe(true);
+  });
+
+  it("accepts arbitrary file attachments within the file size cap", () => {
+    expect(
+      isUploadInput({
+        type: "file",
+        name: "design.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 42,
+      }),
+    ).toBe(true);
   });
 
   it("rejects image types that providers do not support", () => {
@@ -25,6 +40,14 @@ describe("AttachmentCreateUploadUrlInput", () => {
     expect(isUploadInput({ ...uploadInput, sizeBytes: 0 })).toBe(false);
     expect(
       isUploadInput({ ...uploadInput, sizeBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES + 1 }),
+    ).toBe(false);
+    expect(
+      isUploadInput({
+        type: "file",
+        name: "archive.zip",
+        mimeType: "application/zip",
+        sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1,
+      }),
     ).toBe(false);
   });
 });

@@ -837,8 +837,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // Status hues follow the system-wide convention set by sidebar v1 and the
   // mobile Live Activity/widgets (amber approval, indigo input, sky working)
   // so a thread reads the same color everywhere it surfaces.
-  const topStatus =
-    status === "working"
+  const activeRequestIsShownInComposer =
+    props.isActive && (status === "approval" || status === "input");
+  const topStatus = activeRequestIsShownInComposer
+    ? null
+    : status === "working"
       ? {
           label: "Working",
           icon: "working" as const,

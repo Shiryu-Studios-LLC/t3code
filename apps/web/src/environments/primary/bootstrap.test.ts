@@ -183,6 +183,37 @@ describe("environmentBootstrap", () => {
     );
   });
 
+  it("uses the public window origin when a remotely loaded app has a loopback backend configured", () => {
+    installTestBrowser("https://t3.example.com/settings/providers");
+    vi.stubEnv("VITE_HTTP_URL", "http://127.0.0.1:13773");
+    vi.stubEnv("VITE_WS_URL", "ws://127.0.0.1:13773");
+
+    expect(readPrimaryEnvironmentTarget()).toEqual({
+      source: "window-origin",
+      target: {
+        httpBaseUrl: "https://t3.example.com/",
+        wsBaseUrl: "wss://t3.example.com/",
+      },
+    });
+    expect(resolvePrimaryEnvironmentHttpUrl("/.well-known/t3/environment")).toBe(
+      "https://t3.example.com/.well-known/t3/environment",
+    );
+  });
+
+  it("keeps an explicitly configured remote backend when the app is loaded remotely", () => {
+    installTestBrowser("https://app.example.com/");
+    vi.stubEnv("VITE_HTTP_URL", "https://api.example.com");
+    vi.stubEnv("VITE_WS_URL", "wss://api.example.com");
+
+    expect(readPrimaryEnvironmentTarget()).toEqual({
+      source: "configured",
+      target: {
+        httpBaseUrl: "https://api.example.com/",
+        wsBaseUrl: "wss://api.example.com/",
+      },
+    });
+  });
+
   it("uses the vite proxy for desktop-managed loopback descriptor requests during local dev", async () => {
     vi.stubEnv("VITE_DEV_SERVER_URL", "http://127.0.0.1:5733");
     vi.stubGlobal("window", {

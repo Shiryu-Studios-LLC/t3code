@@ -51,6 +51,7 @@ export interface SubagentWorkflowPhase {
 
 export interface SubagentRunHandles {
   readonly runId?: string;
+  readonly workspacePath?: string;
   readonly scriptPath?: string;
   readonly transcriptDir?: string;
   readonly sessionUrl?: string;
@@ -104,7 +105,7 @@ export function isActiveSubagentStatus(status: RuntimeSubagentStatus): boolean {
   return status === "pending" || status === "running" || status === "waiting";
 }
 
-const RECENT_ACTIVITY_LIMIT = 6;
+const RECENT_ACTIVITY_LIMIT = 15;
 const SUMMARY_CHAR_LIMIT = 180;
 const ROSTER_LIMIT = 100;
 
@@ -371,12 +372,15 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
     const record = payload.runHandles as Record<string, unknown>;
     const runHandles: {
       runId?: string;
+      workspacePath?: string;
       scriptPath?: string;
       transcriptDir?: string;
       sessionUrl?: string;
     } = {};
     const runId = asString(record.runId);
     if (runId) runHandles.runId = runId;
+    const workspacePath = asString(record.workspacePath);
+    if (workspacePath) runHandles.workspacePath = workspacePath;
     const scriptPath = asString(record.scriptPath);
     if (scriptPath) runHandles.scriptPath = scriptPath;
     const transcriptDir = asString(record.transcriptDir);
@@ -417,6 +421,17 @@ function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: str
     agent.completedAt = at;
   }
   agent.status = status;
+}
+
+function isStaleReactivation(
+  agent: MutableAgent,
+  status: RuntimeSubagentStatus,
+  at: string,
+): boolean {
+  if (!isTerminalSubagentStatus(agent.status)) return false;
+  if (status !== "running" && status !== "pending" && status !== "waiting") return false;
+  if (agent.completedAt === null) return false;
+  return at <= agent.completedAt;
 }
 
 // Map, not object literal: payloads aren't schema-validated on the read
@@ -511,7 +526,20 @@ export function foldSubagentActivities(
         if (agent.activationCount === 0) agent.activationCount = 1;
         const explicitStatus = asRuntimeStatus(payload.status);
         if (explicitStatus) {
-          applyStatus(agent, explicitStatus, at);
+          if (!isStaleReactivation(agent, explicitStatus, at)) {
+            applyStatus(agent, explicitStatus, at);
+          }
+          // A provider retry/rate-limit can temporarily attach an error while
+          // the child remains alive. A later explicit healthy running tick is
+          // authoritative recovery and must clear that transient issue;
+          // otherwise Agent Overview stays "Rate limited" forever even after
+          // work has resumed.
+          if (
+            (explicitStatus === "running" || explicitStatus === "pending") &&
+            asString(payload.error) === undefined
+          ) {
+            agent.error = null;
+          }
         } else if (
           (payload.usageSnapshot !== true || !existed) &&
           !isTerminalSubagentStatus(agent.status) &&
@@ -552,7 +580,9 @@ export function foldSubagentActivities(
         if (agent.activationCount === 0) agent.activationCount = 1;
         const wasTerminal = isTerminalSubagentStatus(agent.status);
         const status = asRuntimeStatus(payload.status);
-        if (status) applyStatus(agent, status, at);
+        if (status && !isStaleReactivation(agent, status, at)) {
+          applyStatus(agent, status, at);
+        }
         const error = asString(payload.error);
         if (error) agent.error = bounded(error);
         // Provider end time beats ingestion time for the transition that
@@ -600,8 +630,11 @@ export function foldSubagentActivities(
           if (status === "failed") {
             agent.error = agent.error ?? bounded(summary);
           } else {
+            agent.error = null;
             agent.result = bounded(summary);
           }
+        } else if (status !== "failed") {
+          agent.error = null;
         }
         agent.usage = mergeUsageMax(agent.usage, asUsage(payload.typedUsage));
         agent.updatedAt = at;

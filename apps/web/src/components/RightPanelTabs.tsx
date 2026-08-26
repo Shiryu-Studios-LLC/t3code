@@ -315,8 +315,8 @@ function RightPanelEmptyState(props: {
       badgeCount: 0,
     },
     {
-      label: "Agents",
-      description: "Follow subagents and workflows.",
+      label: "Swarm",
+      description: "Coordinate and inspect parallel agents.",
       icon: Bot,
       shortcut: "A",
       available: props.agentsAvailable,
@@ -507,7 +507,7 @@ function surfaceTitle(
     case "pull-request":
       return `#${surface.number}`;
     case "agents":
-      return "Agents";
+      return "Swarm";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -644,7 +644,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       onClick: props.onAddPullRequest,
     },
     {
-      label: "Agents",
+      label: "Swarm",
       icon: Bot,
       shortcut: "A",
       available: props.agentsAvailable,

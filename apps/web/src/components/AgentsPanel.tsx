@@ -22,13 +22,42 @@ import {
   formatSubagentTokenCount,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
+import {
+  Bot,
+  Braces,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  History,
+  LayoutGrid,
+  List,
+  MessageSquare,
+  Plus,
+  Send,
+  Square,
+  Users,
+  WandSparkles,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
+import { swarmEnvironment } from "~/state/swarm";
+import { useAtomCommand } from "~/state/use-atom-command";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Button } from "~/components/ui/button";
+import { usePrimarySettings, useUpdatePrimarySettings } from "~/hooks/useSettings";
+import {
+  deriveAgentHealth,
+  formatRelativeActivity,
+  latestMeaningfulAgentActivityAt,
+} from "~/agentStatus";
+import {
+  collectDismissibleAgentIds,
+  collectAutoArchiveAgentIds,
+  filterArchivedAgents,
+} from "~/agentRosterArchive";
 
 /**
  * In-flight states all present as Working (one steady state, per the
@@ -140,6 +169,15 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
 /** Flat, non-interactive agent status line. No unfold. */
 function AgentRow({ agent }: { agent: RuntimeSubagent }) {
   const visuals = STATUS_VISUALS[agent.status];
+  const active =
+    agent.status === "running" || agent.status === "pending" || agent.status === "waiting";
+  const [healthNow, setHealthNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setHealthNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [active]);
+  const health = deriveAgentHealth(agent, healthNow);
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const role =
@@ -152,6 +190,18 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
+  const meaningfulActivityAt = latestMeaningfulAgentActivityAt(agent);
+  const meaningfulActivityMs = meaningfulActivityAt ? Date.parse(meaningfulActivityAt) : Number.NaN;
+  const lastActivity = Number.isFinite(meaningfulActivityMs)
+    ? `Last activity ${formatRelativeActivity(Math.max(0, healthNow - meaningfulActivityMs))}`
+    : null;
+  const healthLabel = health.issue
+    ? `⚠ ${health.issue.label}${health.issue.retryAfter ? ` · retry after ${health.issue.retryAfter}` : ""}`
+    : health.state === "stalled"
+      ? "⚠ Stalled"
+      : health.state === "possibly-stalled"
+        ? "⚠ Possibly stalled"
+        : null;
 
   return (
     <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
@@ -180,10 +230,10 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
-        {activity ?? visuals.label}
+        {healthLabel ?? activity ?? visuals.label}
       </span>
       <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
-        {metadata.join(" · ")}
+        {[lastActivity, ...metadata].filter(Boolean).join(" · ")}
       </span>
       <span className="sr-only">{visuals.label}</span>
     </div>
@@ -202,6 +252,261 @@ function workflowIsLive(group: AgentPanelWorkflowGroup): boolean {
 
 function workflowMembers(group: AgentPanelWorkflowGroup): ReadonlyArray<RuntimeSubagent> {
   return [...group.phases.flatMap((phase) => phase.members), ...group.unphasedMembers];
+}
+
+export function swarmIntegrationState(group: AgentPanelWorkflowGroup): {
+  label: string;
+  detail: string;
+  tone: "working" | "ready" | "failed" | "complete";
+} {
+  const members = workflowMembers(group);
+  const live = members.filter(
+    (member) =>
+      member.status === "running" || member.status === "pending" || member.status === "waiting",
+  );
+  if (live.length > 0) {
+    const currentPhase = group.phases.find((phase) => phase.state === "running");
+    return {
+      label: currentPhase ? `Executing · ${currentPhase.title}` : "Executing worker graph",
+      detail: `${live.length} worker${live.length === 1 ? "" : "s"} active; downstream work waits for its dependencies.`,
+      tone: "working",
+    };
+  }
+  if (members.some((member) => member.status === "failed")) {
+    return {
+      label: "Integration needs attention",
+      detail: "The orchestrator is reconciling partial results and failed worker output.",
+      tone: "failed",
+    };
+  }
+  if (group.workflow.status === "completed") {
+    return {
+      label: "Recombined and verified",
+      detail: "Worker results were integrated into the orchestrator's final result.",
+      tone: "complete",
+    };
+  }
+  return {
+    label: "Collecting worker results",
+    detail:
+      "All workers are settled; the orchestrator is gathering their outputs before recombination and verification.",
+    tone: "working",
+  };
+}
+
+function OrchestratorCard({ group }: { group: AgentPanelWorkflowGroup }) {
+  const integration = swarmIntegrationState(group);
+  return (
+    <section className="rounded-xl border border-primary/25 bg-gradient-to-br from-primary/[.08] to-card/70 p-3 shadow-sm">
+      <div className="flex items-start gap-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10">
+          <Braces aria-hidden className="size-4 text-primary" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold">Orchestrator · {group.workflow.title}</p>
+            <span className="rounded-full border border-border/70 bg-background/70 px-2 py-0.5 font-mono text-[.65rem] text-muted-foreground">
+              {STATUS_VISUALS[group.workflow.status].label}
+            </span>
+          </div>
+          <p className="mt-1 text-xs font-medium text-foreground/90">{integration.label}</p>
+          <p className="mt-0.5 text-[.7rem] text-muted-foreground">{integration.detail}</p>
+        </div>
+      </div>
+      <div className="mt-2 border-t border-border/50 pt-1">
+        <PhaseRail group={group} />
+      </div>
+    </section>
+  );
+}
+
+type SwarmMode = "auto" | "hybrid" | "manual";
+type SwarmView = "overview" | "grid" | "history";
+
+function flattenAgents(model: AgentPanelModel): RuntimeSubagent[] {
+  return [
+    ...model.workflows.flatMap((group) => [group.workflow, ...workflowMembers(group)]),
+    ...model.directAgents,
+  ];
+}
+
+export function buildSwarmCommand(
+  kind: "launch" | "message" | "stop" | "ask-all" | "summarize" | "stop-all",
+  input: {
+    task?: string;
+    title?: string;
+    workspace?: "shared" | "worktree";
+    target?: RuntimeSubagent;
+    message?: string;
+  },
+): string {
+  switch (kind) {
+    case "launch":
+      return [
+        "[T3 Swarm Control] Launch exactly one new background child agent for this task.",
+        input.title?.trim() ? `Agent title: ${input.title.trim()}` : null,
+        `Workspace strategy: ${input.workspace === "shared" ? "shared checkout" : "isolated git worktree"}.`,
+        "Keep it independent from the other live workers. Return immediately after launch so I can add more agents.",
+        `Task: ${input.task?.trim() ?? ""}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    case "message":
+      return `[T3 Swarm Control] Send this instruction to the live child agent \"${input.target?.title ?? "unknown"}\" (${input.target?.id ?? "unknown"}) without stopping its work:\n${input.message?.trim() ?? ""}`;
+    case "stop":
+      return `[T3 Swarm Control] Stop only the child agent \"${input.target?.title ?? "unknown"}\" (${input.target?.id ?? "unknown"}). Preserve its partial result and summarize what it completed.`;
+    case "ask-all":
+      return `[T3 Swarm Control] Broadcast this instruction to every currently live child agent. Do not cancel their existing work; treat it as an additional instruction:\n${input.message?.trim() ?? ""}`;
+    case "summarize":
+      return "[T3 Swarm Control] Give me an interim swarm summary now: one compact line per live or recently completed agent with current task, progress/result, blockers, and next step. Do not cancel or pause any workers.";
+    case "stop-all":
+      return "[T3 Swarm Control] Stop all currently live child agents. Preserve each partial result, then provide one consolidated summary of what each worker completed before stopping.";
+  }
+}
+
+export function canLaunchSwarmAgent(
+  mode: SwarmMode,
+  activeCount: number,
+  agentLimit: number,
+  commandAvailable: boolean,
+): boolean {
+  return mode !== "auto" && commandAvailable && activeCount < agentLimit;
+}
+
+function SwarmCard({
+  agent,
+  onMessage,
+  onStop,
+}: {
+  agent: RuntimeSubagent;
+  onMessage?: (agent: RuntimeSubagent, message: string) => Promise<boolean>;
+  onStop?: (agent: RuntimeSubagent) => Promise<boolean>;
+}) {
+  const active =
+    agent.status === "running" || agent.status === "pending" || agent.status === "waiting";
+  const [messageOpen, setMessageOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const modelLabel = formatSubagentModelLabel(agent.model, agent.effort) ?? "default model";
+  const activity = agentActivityText(agent) ?? STATUS_VISUALS[agent.status].label;
+  const sendMessage = async () => {
+    if (!onMessage || !message.trim()) return;
+    if (await onMessage(agent, message)) {
+      setMessage("");
+      setMessageOpen(false);
+    }
+  };
+
+  return (
+    <article className="flex min-h-44 flex-col rounded-lg border border-border/70 bg-card/60 p-3 shadow-sm">
+      <div className="flex items-start gap-2">
+        <StatusDot status={agent.status} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold">{agent.title}</p>
+          <p className="truncate text-[.7rem] text-muted-foreground">{modelLabel}</p>
+        </div>
+        <span className="rounded border border-border/60 px-1.5 py-0.5 font-mono text-[.65rem] text-muted-foreground">
+          {STATUS_VISUALS[agent.status].label}
+        </span>
+      </div>
+      <p className="mt-3 line-clamp-3 min-h-12 text-xs leading-relaxed text-foreground/90">
+        {activity}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[.65rem] text-muted-foreground">
+        {agent.startedAt ? (
+          <span>{elapsedBetween(agent.startedAt, active ? null : agent.completedAt)}</span>
+        ) : null}
+        <span>
+          {agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok"}
+        </span>
+        {agent.usage?.toolUses !== undefined ? <span>{agent.usage.toolUses} tools</span> : null}
+        {agent.runHandles?.workspacePath ? (
+          <span className="truncate">{agent.runHandles.workspacePath}</span>
+        ) : null}
+        {!agent.runHandles?.workspacePath && agent.runHandles?.scriptPath ? (
+          <span className="truncate">{agent.runHandles.scriptPath}</span>
+        ) : null}
+      </div>
+      {messageOpen ? (
+        <div className="mt-3 flex gap-1.5">
+          <input
+            autoFocus
+            value={message}
+            onChange={(event) => setMessage(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") sendMessage();
+              if (event.key === "Escape") setMessageOpen(false);
+            }}
+            placeholder="Instruction for this agent…"
+            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs outline-none focus:border-ring"
+          />
+          <Button size="icon-micro" onClick={sendMessage} disabled={!message.trim()}>
+            <Send aria-hidden className="size-3" />
+          </Button>
+        </div>
+      ) : null}
+      {detailsOpen ? (
+        <div className="mt-3 rounded-md border border-border/60 bg-background/60 p-2">
+          <p className="text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
+            Recent activity
+          </p>
+          <div className="mt-1.5 space-y-1">
+            {agent.recentActivity.length > 0 ? (
+              agent.recentActivity.slice(-6).map((entry) => (
+                <div
+                  key={`${entry.at}:${entry.summary}`}
+                  className="text-[.7rem] leading-relaxed text-foreground/85"
+                >
+                  <span className="mr-1 font-mono text-muted-foreground">
+                    {new Date(entry.at).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                  {entry.summary}
+                </div>
+              ))
+            ) : (
+              <p className="text-[.7rem] text-muted-foreground">
+                No detailed activity has been reported yet.
+              </p>
+            )}
+          </div>
+          {agent.result ? (
+            <p className="mt-2 text-[.7rem] leading-relaxed">
+              <span className="font-medium">Result:</span> {agent.result}
+            </p>
+          ) : null}
+          {agent.error ? (
+            <p className="mt-2 text-[.7rem] leading-relaxed text-destructive-foreground">
+              <span className="font-medium">Error:</span> {agent.error}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="mt-auto flex gap-1.5 pt-3">
+        <Button size="xs" variant="ghost-muted" onClick={() => setDetailsOpen((value) => !value)}>
+          {detailsOpen ? "Hide details" : "Details"}
+        </Button>
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          disabled={!active || !onMessage}
+          onClick={() => setMessageOpen((value) => !value)}
+        >
+          <MessageSquare aria-hidden className="mr-1 size-3" /> Message
+        </Button>
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          disabled={!active || !onStop}
+          onClick={() => void onStop?.(agent)}
+        >
+          <Square aria-hidden className="mr-1 size-3" /> Stop
+        </Button>
+      </div>
+    </article>
+  );
 }
 
 /**
@@ -524,60 +829,456 @@ export function AgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  parentTurnCompleted = false,
+  orchestratorBusy = false,
+  agentLimit,
+  projectCwd,
+  onCommand,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  parentTurnCompleted?: boolean;
+  orchestratorBusy?: boolean;
+  agentLimit?: number;
+  projectCwd?: string;
+  onCommand?: (command: string) => boolean;
 }) {
-  if (!model.hasAgents) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-        <Bot aria-hidden className="size-6 text-muted-foreground/60" />
-        <p className="text-sm font-medium">No agents yet</p>
-        <p className="max-w-56 text-xs text-muted-foreground">
-          When this thread spawns subagents or runs a workflow, they show up here with live status,
-          activity, and token usage.
-        </p>
-      </div>
+  const configuredAgentLimit = usePrimarySettings((settings) => settings.agentTeamMaxConcurrency);
+  const serverAgentTeamMode = usePrimarySettings((settings) => settings.agentTeamMode);
+  const updatePrimarySettings = useUpdatePrimarySettings();
+  const effectiveAgentLimit = Math.min(15, agentLimit ?? configuredAgentLimit);
+  const launchAgentMutation = useAtomCommand(swarmEnvironment.launchAgent, {
+    reportFailure: false,
+  });
+  const messageAgentMutation = useAtomCommand(swarmEnvironment.messageAgent, {
+    reportFailure: false,
+  });
+  const stopAgentMutation = useAtomCommand(swarmEnvironment.stopAgent, { reportFailure: false });
+  const archiveStorageKey =
+    environmentId && threadId ? `t3:agents:archived:${environmentId}:${threadId}` : null;
+  const swarmModeStorageKey =
+    environmentId && threadId ? `t3:swarm:mode:${environmentId}:${threadId}` : null;
+  const [archivedIds, setArchivedIds] = useState<Set<string>>(() => {
+    if (!archiveStorageKey || typeof window === "undefined") return new Set();
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(archiveStorageKey) ?? "[]");
+      return new Set(
+        Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : [],
+      );
+    } catch {
+      return new Set();
+    }
+  });
+  const [showArchived, setShowArchived] = useState(false);
+  const [view, setView] = useState<SwarmView>("grid");
+  const [mode, setMode] = useState<SwarmMode>(() => {
+    if (!swarmModeStorageKey || typeof window === "undefined") return "auto";
+    const stored = window.localStorage.getItem(swarmModeStorageKey);
+    return stored === "hybrid" || stored === "manual" ? stored : "auto";
+  });
+  const [launchOpen, setLaunchOpen] = useState(false);
+  const [launchTitle, setLaunchTitle] = useState("");
+  const [launchTask, setLaunchTask] = useState("");
+  const [workspaceStrategy, setWorkspaceStrategy] = useState<"shared" | "worktree">("worktree");
+  const [broadcast, setBroadcast] = useState("");
+  const [commandNotice, setCommandNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!swarmModeStorageKey || typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(swarmModeStorageKey);
+    setMode(stored === "hybrid" || stored === "manual" ? stored : "auto");
+  }, [swarmModeStorageKey]);
+
+  const updateMode = (next: SwarmMode) => {
+    setMode(next);
+    if (serverAgentTeamMode === "off") {
+      updatePrimarySettings({ agentTeamMode: "auto" });
+    }
+    if (swarmModeStorageKey && typeof window !== "undefined") {
+      window.localStorage.setItem(swarmModeStorageKey, next);
+    }
+  };
+
+  const dispatchCommand = (command: string): boolean => {
+    const accepted = onCommand?.(command) ?? false;
+    setCommandNotice(
+      accepted
+        ? "Sent to the swarm lead."
+        : "Could not send while the composer is busy or contains an unsent draft.",
     );
-  }
+    return accepted;
+  };
+
+  useEffect(() => {
+    setShowArchived(false);
+    if (!archiveStorageKey || typeof window === "undefined") {
+      setArchivedIds(new Set());
+      return;
+    }
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(archiveStorageKey) ?? "[]");
+      setArchivedIds(
+        new Set(Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : []),
+      );
+    } catch {
+      setArchivedIds(new Set());
+    }
+  }, [archiveStorageKey]);
+
+  useEffect(() => {
+    if (!archiveStorageKey) return;
+    const autoArchive = collectAutoArchiveAgentIds(model, parentTurnCompleted);
+    if (autoArchive.size === 0) return;
+    setArchivedIds((current) => {
+      const next = new Set(current);
+      for (const id of autoArchive) next.add(id);
+      window.localStorage.setItem(archiveStorageKey, JSON.stringify([...next]));
+      return next;
+    });
+  }, [archiveStorageKey, model, parentTurnCompleted]);
+
+  const visibleModel = showArchived ? model : filterArchivedAgents(model, archivedIds);
+  const dismissibleIds = collectDismissibleAgentIds(model, Date.now());
+  const clearCompleted = () => {
+    if (!archiveStorageKey) return;
+    setArchivedIds((current) => {
+      const next = new Set(current);
+      for (const id of dismissibleIds) next.add(id);
+      window.localStorage.setItem(archiveStorageKey, JSON.stringify([...next]));
+      return next;
+    });
+    setShowArchived(false);
+  };
+  const activeAgents = flattenAgents(filterArchivedAgents(model, archivedIds)).filter(
+    (agent) => agent.kind !== "workflow",
+  );
+  const historyAgents = flattenAgents(model).filter(
+    (agent) => agent.kind !== "workflow" && archivedIds.has(agent.id),
+  );
+  const activeCount = activeAgents.filter(
+    (agent) =>
+      agent.status === "running" || agent.status === "pending" || agent.status === "waiting",
+  ).length;
+  const canLaunch = canLaunchSwarmAgent(mode, activeCount, effectiveAgentLimit, Boolean(onCommand));
+  const launchAgent = async () => {
+    if (!launchTask.trim() || !canLaunch || !environmentId || !threadId) return;
+    setCommandNotice("Launching agent…");
+    const result = await launchAgentMutation({
+      environmentId,
+      input: {
+        threadId,
+        task: launchTask.trim(),
+        ...(launchTitle.trim() ? { title: launchTitle.trim() } : {}),
+        workspaceStrategy,
+        ...(projectCwd ? { projectCwd } : {}),
+      },
+    });
+    if (result._tag === "Success") {
+      setCommandNotice(
+        `Launched ${result.value.title}${result.value.workspacePath ? ` in ${result.value.workspacePath}` : ""}.`,
+      );
+      setLaunchTitle("");
+      setLaunchTask("");
+      setLaunchOpen(false);
+    } else {
+      setCommandNotice(
+        "The backend could not launch this agent. Check provider readiness and try again.",
+      );
+    }
+  };
+  const messageAgent = async (agent: RuntimeSubagent, message: string): Promise<boolean> => {
+    if (!environmentId || !threadId) return false;
+    const result = await messageAgentMutation({
+      environmentId,
+      input: { threadId, agentId: agent.id, message: message.trim() },
+    });
+    setCommandNotice(
+      result._tag === "Success"
+        ? `Message sent to ${agent.title}.`
+        : `Could not message ${agent.title}.`,
+    );
+    return result._tag === "Success";
+  };
+  const stopAgent = async (agent: RuntimeSubagent): Promise<boolean> => {
+    if (!environmentId || !threadId) return false;
+    const result = await stopAgentMutation({
+      environmentId,
+      input: { threadId, agentId: agent.id },
+    });
+    setCommandNotice(
+      result._tag === "Success"
+        ? `Stop requested for ${agent.title}.`
+        : `Could not stop ${agent.title}.`,
+    );
+    return result._tag === "Success";
+  };
+  const askAll = () => {
+    if (!broadcast.trim()) return;
+    if (dispatchCommand(buildSwarmCommand("ask-all", { message: broadcast }))) {
+      setBroadcast("");
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-2 p-2">
-          {model.workflows.map((group) => (
-            <WorkflowSection
-              key={group.workflow.id}
-              group={group}
-              environmentId={environmentId}
-              threadId={threadId}
-            />
-          ))}
-          {model.directAgents.length > 0 ? (
-            <section>
-              <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
-                Direct spawns
-              </div>
-              {model.directAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} />
-              ))}
-            </section>
-          ) : null}
+      <div className="border-b border-border/60 px-3 py-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="flex items-center gap-1.5 text-sm font-semibold">
+              <Users aria-hidden className="size-4" /> Swarm
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {activeCount}/{effectiveAgentLimit} active ·{" "}
+              {formatSubagentTokenCount(visibleModel.totalTokens)} tokens
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-1">
+            {(["auto", "hybrid", "manual"] as const).map((candidate) => (
+              <Button
+                key={candidate}
+                size="xs"
+                variant={mode === candidate ? "secondary" : "ghost-muted"}
+                onClick={() => updateMode(candidate)}
+              >
+                {candidate === "auto" ? "Auto" : candidate === "hybrid" ? "Hybrid" : "Manual"}
+              </Button>
+            ))}
+          </div>
         </div>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <Button size="xs" variant="ghost-muted" onClick={() => setView("overview")}>
+            <List aria-hidden className="mr-1 size-3" /> Overview
+          </Button>
+          <Button size="xs" variant="ghost-muted" onClick={() => setView("grid")}>
+            <LayoutGrid aria-hidden className="mr-1 size-3" /> Grid
+          </Button>
+          <Button size="xs" variant="ghost-muted" onClick={() => setView("history")}>
+            <History aria-hidden className="mr-1 size-3" /> Previous swarms
+          </Button>
+          <div className="ml-auto flex flex-wrap gap-1.5">
+            <Button
+              size="xs"
+              variant="secondary"
+              disabled={!canLaunch}
+              title={
+                mode === "auto" ? "Switch to Hybrid or Manual to add agents yourself." : undefined
+              }
+              onClick={() => setLaunchOpen((value) => !value)}
+            >
+              <Plus aria-hidden className="mr-1 size-3" /> Add agent
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost-muted"
+              disabled={!onCommand}
+              onClick={() => dispatchCommand(buildSwarmCommand("summarize", {}))}
+            >
+              <WandSparkles aria-hidden className="mr-1 size-3" /> Summarize now
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost-muted"
+              disabled={activeCount === 0 || !onCommand}
+              onClick={() => dispatchCommand(buildSwarmCommand("stop-all", {}))}
+            >
+              <Square aria-hidden className="mr-1 size-3" /> Stop swarm
+            </Button>
+          </div>
+        </div>
+        {launchOpen ? (
+          <div className="mt-2 rounded-md border border-border/70 bg-background/60 p-2">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input
+                value={launchTitle}
+                onChange={(event) => setLaunchTitle(event.currentTarget.value)}
+                placeholder="Agent title (optional)"
+                className="rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus:border-ring"
+              />
+              <select
+                value={workspaceStrategy}
+                onChange={(event) =>
+                  setWorkspaceStrategy(event.currentTarget.value as "shared" | "worktree")
+                }
+                className="rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus:border-ring"
+              >
+                <option value="worktree">Isolated Git worktree</option>
+                <option value="shared">Shared checkout</option>
+              </select>
+            </div>
+            <textarea
+              value={launchTask}
+              onChange={(event) => setLaunchTask(event.currentTarget.value)}
+              placeholder="What should this agent do?"
+              rows={3}
+              className="mt-2 w-full resize-none rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus:border-ring"
+            />
+            <div className="mt-2 flex justify-end gap-1.5">
+              <Button size="xs" variant="ghost-muted" onClick={() => setLaunchOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                size="xs"
+                disabled={!launchTask.trim() || !canLaunch}
+                onClick={() => void launchAgent()}
+              >
+                Launch agent
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {commandNotice ? (
+          <p className="mt-1.5 text-[.7rem] text-muted-foreground">{commandNotice}</p>
+        ) : null}
+      </div>
+      <div className="shrink-0 space-y-2 border-b border-border/60 bg-background/80 p-3 backdrop-blur">
+        {visibleModel.workflows.length > 0 ? (
+          visibleModel.workflows.map((group) => (
+            <OrchestratorCard key={group.workflow.id} group={group} />
+          ))
+        ) : (
+          <section className="rounded-xl border border-primary/20 bg-primary/[.04] p-3">
+            <div className="flex items-center gap-2">
+              <Braces aria-hidden className="size-4 text-primary" />
+              <p className="text-sm font-semibold">Orchestrator · Thread lead</p>
+              <span className="ml-auto rounded-full border border-border/70 px-2 py-0.5 font-mono text-[.65rem] text-muted-foreground">
+                {activeCount > 0 || orchestratorBusy ? "Coordinating" : "Ready"}
+              </span>
+            </div>
+            <p className="mt-1 text-[.7rem] text-muted-foreground">
+              {activeCount > 0
+                ? "Managing worker dependencies and preparing their results for integration."
+                : orchestratorBusy
+                  ? "Collecting settled worker results and preparing the next integration step."
+                  : "Describe a goal in the floating composer or add workers in Hybrid or Manual mode."}
+            </p>
+          </section>
+        )}
+      </div>
+      <ScrollArea className="min-h-0 flex-1">
+        {view === "overview" ? (
+          <div className="flex flex-col gap-2 p-2">
+            {visibleModel.workflows.map((group) => (
+              <WorkflowSection
+                key={group.workflow.id}
+                group={group}
+                environmentId={environmentId}
+                threadId={threadId}
+              />
+            ))}
+            {visibleModel.directAgents.map((agent) => (
+              <AgentRow key={agent.id} agent={agent} />
+            ))}
+          </div>
+        ) : view === "history" ? (
+          <div className="p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Previous swarms</p>
+                <p className="text-xs text-muted-foreground">
+                  Completed workers stay here for traceability.
+                </p>
+              </div>
+              {dismissibleIds.size > 0 ? (
+                <Button size="xs" variant="ghost-muted" onClick={clearCompleted}>
+                  Clean up now
+                </Button>
+              ) : null}
+            </div>
+            {historyAgents.length > 0 ? (
+              <div className="space-y-3">
+                {model.workflows
+                  .filter((group) => archivedIds.has(group.workflow.id))
+                  .map((group) => (
+                    <section
+                      key={group.workflow.id}
+                      className="rounded-xl border border-border/70 bg-card/40 p-3"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold">{group.workflow.title}</p>
+                          <p className="text-[.7rem] text-muted-foreground">
+                            {swarmIntegrationState(group).label} · {workflowMembers(group).length}{" "}
+                            workers
+                          </p>
+                        </div>
+                        <span className="font-mono text-[.65rem] text-muted-foreground">
+                          {group.workflow.completedAt
+                            ? new Date(group.workflow.completedAt).toLocaleString()
+                            : "Previous run"}
+                        </span>
+                      </div>
+                      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                        {workflowMembers(group).map((agent) => (
+                          <SwarmCard key={agent.id} agent={agent} />
+                        ))}
+                      </div>
+                    </section>
+                  ))}
+                {historyAgents.some((agent) => agent.parentAgentId === null) ? (
+                  <section className="rounded-xl border border-border/70 bg-card/40 p-3">
+                    <p className="mb-2 text-sm font-semibold">Manual swarm run</p>
+                    <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                      {historyAgents
+                        .filter((agent) => agent.parentAgentId === null)
+                        .map((agent) => (
+                          <SwarmCard key={agent.id} agent={agent} />
+                        ))}
+                    </div>
+                  </section>
+                ) : null}
+              </div>
+            ) : (
+              <div className="flex min-h-48 flex-col items-center justify-center gap-2 text-center text-muted-foreground">
+                <History aria-hidden className="size-5" />
+                <p className="text-xs">No previous swarm runs yet.</p>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="p-3">
+            {activeAgents.length > 0 ? (
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                {activeAgents.map((agent) => (
+                  <SwarmCard
+                    key={agent.id}
+                    agent={agent}
+                    onMessage={messageAgent}
+                    onStop={stopAgent}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="flex min-h-64 flex-col items-center justify-center gap-2 text-center">
+                <Bot aria-hidden className="size-7 text-muted-foreground/60" />
+                <p className="text-sm font-medium">Swarm is idle</p>
+                <p className="max-w-sm text-xs text-muted-foreground">
+                  In Auto mode, ask the lead to handle a decomposable task. Switch to Hybrid or
+                  Manual to launch workers yourself.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </ScrollArea>
-      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
-        <span className="flex items-center gap-2">
-          {model.runningCount + model.waitingCount > 0 ? (
-            <span className="text-info-foreground">
-              ● {model.runningCount + model.waitingCount} working
-            </span>
-          ) : null}
-          {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
-          {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
-        </span>
-        <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
-      </footer>
+      {activeCount > 0 && mode !== "auto" ? (
+        <div className="shrink-0 border-t border-border/60 bg-background/85 px-3 py-2 backdrop-blur-xl">
+          <div className="mx-auto flex max-w-3xl items-center gap-2 rounded-[18px] border border-border/80 bg-card/90 p-1.5 shadow-lg">
+            <input
+              value={broadcast}
+              onChange={(event) => setBroadcast(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") askAll();
+              }}
+              placeholder="Message the orchestrator and all live workers…"
+              className="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-xs outline-none"
+            />
+            <Button size="xs" disabled={!broadcast.trim() || !onCommand} onClick={askAll}>
+              <Send aria-hidden className="mr-1 size-3" /> Send
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

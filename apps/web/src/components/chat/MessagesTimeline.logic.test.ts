@@ -3,10 +3,42 @@ import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  normalizeFriendlyAgentTaskResult,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   shouldPreserveAssistantLineBreaks,
 } from "./MessagesTimeline.logic";
+
+describe("normalizeFriendlyAgentTaskResult", () => {
+  it("removes native task wrappers while preserving markdown content", () => {
+    const result = normalizeFriendlyAgentTaskResult(`
+<task id="ses_fc57d9f28ffeCuQK486arjNUDR" state="completed">
+<task_result>
+Done. Full report:
+
+## Files created
+| File | Purpose |
+| --- | --- |
+| \`a.ts\` | Test |
+</task_result>
+</task>`);
+
+    expect(result).toEqual({
+      cleanedMarkdown:
+        "Done. Full report:\n\n## Files created\n| File | Purpose |\n| --- | --- |\n| `a.ts` | Test |",
+      completed: true,
+      hadInternalMarkup: true,
+    });
+  });
+
+  it("leaves ordinary markdown unchanged", () => {
+    expect(normalizeFriendlyAgentTaskResult("## Done\nAll tests passed.")).toEqual({
+      cleanedMarkdown: "## Done\nAll tests passed.",
+      completed: false,
+      hadInternalMarkup: false,
+    });
+  });
+});
 
 describe("shouldPreserveAssistantLineBreaks", () => {
   it("preserves Claude insight formatting without changing regular markdown", () => {

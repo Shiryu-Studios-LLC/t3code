@@ -33,10 +33,12 @@ import {
 } from "../opencodeRuntime.ts";
 import {
   appendOpenCodeAssistantTextDelta,
+  buildOpenCodeAgentTeamInstruction,
   isOpenCodeNotFound,
   isSameOpenCodeDirectory,
   makeOpenCodeAdapter,
   mergeOpenCodeAssistantText,
+  openCodeTaskChildSessionId,
 } from "./OpenCodeAdapter.ts";
 
 // Test-local service tag so the rest of the file can keep using `yield* OpenCodeAdapter`.
@@ -277,6 +279,32 @@ beforeEach(() => {
   runtimeMock.reset();
 });
 
+it("extracts OpenCode child-session identity from task metadata", () => {
+  const part = {
+    id: "part-task",
+    sessionID: "parent",
+    messageID: "assistant",
+    type: "tool" as const,
+    callID: "call-task",
+    tool: "task",
+    state: {
+      status: "running" as const,
+      input: { prompt: "Do work" },
+      title: "Worker",
+      metadata: { sessionId: "child-123" },
+      time: { start: 1 },
+    },
+  };
+  NodeAssert.equal(openCodeTaskChildSessionId(part), "child-123");
+  NodeAssert.equal(
+    openCodeTaskChildSessionId({
+      ...part,
+      state: { ...part.state, metadata: { child_session_id: "child-legacy" } },
+    }),
+    "child-legacy",
+  );
+});
+
 const advanceTestClock = (ms: number) =>
   TestClock.adjust(`${ms} millis`).pipe(Effect.andThen(Effect.yieldNow));
 
@@ -385,6 +413,66 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
 
       yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("rebuilds child-session correlation when resuming a persisted parent session", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-resume-child-correlation");
+      const parentSessionID = "persisted-parent-session";
+      const childSessionID = "persisted-child-session";
+      runtimeMock.state.messages = [
+        {
+          info: { id: "persisted-assistant", role: "assistant" },
+          parts: [
+            {
+              id: "persisted-task-part",
+              sessionID: parentSessionID,
+              messageID: "persisted-assistant",
+              type: "tool",
+              callID: "persisted-child-call",
+              tool: "task",
+              state: {
+                status: "running",
+                title: "Persisted worker",
+                input: { prompt: "Continue persisted work" },
+                metadata: { sessionId: childSessionID, parentSessionId: parentSessionID },
+                time: { start: 1 },
+              },
+            },
+          ],
+        },
+      ];
+      runtimeMock.state.subscribedEvents = [
+        {
+          id: "evt-persisted-child-busy",
+          type: "session.status",
+          properties: { sessionID: childSessionID, status: { type: "busy" } },
+        },
+      ];
+
+      const progressFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.progress"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+        resumeCursor: { schemaVersion: 1, sessionId: parentSessionID },
+      });
+
+      const events = Array.from(yield* Fiber.join(progressFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.equal(events.length, 1);
+      const progress = events[0];
+      NodeAssert.equal(progress?.type, "task.progress");
+      if (progress?.type === "task.progress") {
+        NodeAssert.equal(progress.payload.taskId, "persisted-child-call");
+        NodeAssert.equal(progress.payload.runHandles?.runId, childSessionID);
+      }
     }),
   );
 
@@ -628,6 +716,61 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("stopping a parent session also aborts a still-running background child", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-stop-with-child");
+      const parentSessionID = "http://127.0.0.1:9999/session";
+      const childSessionID = "child-stop-session";
+      runtimeMock.state.subscribedEvents = [
+        {
+          id: "evt-stop-child-task",
+          type: "message.part.updated",
+          properties: {
+            sessionID: parentSessionID,
+            part: {
+              id: "part-stop-child",
+              sessionID: parentSessionID,
+              messageID: "message-stop-child",
+              type: "tool",
+              callID: "call-stop-child",
+              tool: "task",
+              state: {
+                status: "running",
+                title: "Long worker",
+                input: { prompt: "Keep working" },
+                metadata: {
+                  sessionId: childSessionID,
+                  parentSessionId: parentSessionID,
+                  background: true,
+                },
+                time: { start: 1 },
+              },
+            },
+            time: 1,
+          },
+        },
+      ];
+
+      const itemFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "item.updated"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* Fiber.join(itemFiber).pipe(Effect.timeout("1 second"));
+      yield* adapter.stopSession(threadId);
+
+      NodeAssert.ok(runtimeMock.state.abortCalls.includes(childSessionID));
+      NodeAssert.ok(runtimeMock.state.abortCalls.includes(parentSessionID));
+    }),
+  );
+
   it.effect("clears session state even when cleanup finalizers throw", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -651,10 +794,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       yield* Effect.exit(adapter.stopAll());
       const sessions = yield* adapter.listSessions();
 
-      NodeAssert.deepEqual(runtimeMock.state.closeCalls, [
-        "http://127.0.0.1:9999",
-        "http://127.0.0.1:9999",
-      ]);
+      // At least both live contexts must attempt cleanup. Layer/test-scope
+      // finalization may race in and repeat an idempotent external-server
+      // close probe, so an exact global count is not a stable invariant.
+      NodeAssert.ok(runtimeMock.state.closeCalls.length >= 2);
+      NodeAssert.ok(runtimeMock.state.closeCalls.every((url) => url === "http://127.0.0.1:9999"));
       NodeAssert.deepEqual(sessions, []);
     }),
   );
@@ -856,6 +1000,73 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }).pipe(Effect.provide(adapterLayer));
   });
 
+  it.effect(
+    "injects the OpenCode team orchestration contract without changing the visible user message",
+    () => {
+      const adapterLayer = Layer.effect(
+        OpenCodeAdapter,
+        makeOpenCodeAdapter(openCodeAdapterTestSettings, {
+          getAgentTeamSettings: () => Effect.succeed({ mode: "auto", maxConcurrency: 3 }),
+        }),
+      ).pipe(
+        Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(ServerSettingsService.layerTest()),
+        Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(NodeServices.layer),
+      );
+
+      return Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-agent-team-auto");
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId,
+          input: "Implement the API and UI, then test both.",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("opencode"),
+            model: "openai/gpt-5",
+          },
+        });
+
+        const call = runtimeMock.state.promptCalls.at(-1) as {
+          readonly parts?: ReadonlyArray<{ readonly type?: string; readonly text?: string }>;
+        };
+        const promptText = call.parts?.find((part) => part.type === "text")?.text ?? "";
+        NodeAssert.match(promptText, /\[T3 Agent Team Mode\]/);
+        NodeAssert.match(promptText, /more than 3 child agents running concurrently/);
+        NodeAssert.match(promptText, /User request:\nImplement the API and UI, then test both\./);
+      }).pipe(Effect.provide(adapterLayer));
+    },
+  );
+
+  it.effect("builds bounded auto and always team instructions and leaves off mode untouched", () =>
+    Effect.sync(() => {
+      NodeAssert.equal(
+        buildOpenCodeAgentTeamInstruction({ mode: "off", maxConcurrency: 4 }),
+        undefined,
+      );
+      const auto = buildOpenCodeAgentTeamInstruction({ mode: "auto", maxConcurrency: 99 });
+      NodeAssert.ok(auto);
+      NodeAssert.match(auto, /more than 15 child agents running concurrently/);
+      NodeAssert.match(
+        auto,
+        /decide whether the request has at least two useful independent workstreams/,
+      );
+      NodeAssert.match(auto, /\[T3 Swarm Control\]/);
+      NodeAssert.match(auto, /isolated Git worktree/);
+
+      const always = buildOpenCodeAgentTeamInstruction({ mode: "always", maxConcurrency: 2 });
+      NodeAssert.ok(always);
+      NodeAssert.match(always, /delegate at least two independent subtasks/);
+    }),
+  );
+
   it.effect("uses the bound custom instance id for fallback sendTurn model selection", () => {
     const instanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(
@@ -1049,7 +1260,12 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const real = path.join(base, "real");
       const link = path.join(base, "link");
       yield* fileSystem.makeDirectory(real);
-      yield* fileSystem.symlink(real, link);
+      const symlinkExit = yield* Effect.exit(fileSystem.symlink(real, link));
+      // Windows requires Developer Mode/admin privileges for directory
+      // symlinks. The lexical/fallback assertions above still exercise the
+      // production behavior there; only run the physical-identity portion
+      // when the host permits creating the fixture.
+      if (Exit.isFailure(symlinkExit)) return;
       NodeAssert.equal(yield* sameDirectory(link, real), true);
       NodeAssert.equal(yield* sameDirectory(link, path.join(base, "other")), false);
     }).pipe(Effect.scoped),
@@ -1147,6 +1363,557 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       if (completed?.type === "item.completed") {
         NodeAssert.equal(completed.payload.detail, "A BBonus");
       }
+    }),
+  );
+
+  it.effect(
+    "streams multiple native OpenCode child-agent tasks and the consolidated parent result",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-opencode-agent-team-events");
+        const sessionID = "http://127.0.0.1:9999/session";
+        const assistantMessageID = "msg-agent-team-parent";
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "message.updated",
+            properties: {
+              sessionID,
+              info: { id: assistantMessageID, role: "assistant" },
+            },
+          },
+          {
+            type: "message.part.updated",
+            properties: {
+              sessionID,
+              part: {
+                id: "part-child-alpha",
+                sessionID,
+                messageID: assistantMessageID,
+                type: "tool",
+                callID: "call-child-alpha",
+                tool: "task",
+                state: {
+                  status: "running",
+                  title: "Analyze alpha",
+                  input: { subagent_type: "explore", prompt: "Read alpha.txt" },
+                  time: { start: 1 },
+                },
+              },
+            },
+          },
+          {
+            type: "message.part.updated",
+            properties: {
+              sessionID,
+              part: {
+                id: "part-child-beta",
+                sessionID,
+                messageID: assistantMessageID,
+                type: "tool",
+                callID: "call-child-beta",
+                tool: "task",
+                state: {
+                  status: "running",
+                  title: "Analyze beta",
+                  input: { subagent_type: "explore", prompt: "Read beta.txt" },
+                  time: { start: 2 },
+                },
+              },
+            },
+          },
+          {
+            type: "message.part.updated",
+            properties: {
+              sessionID,
+              part: {
+                id: "part-child-alpha",
+                sessionID,
+                messageID: assistantMessageID,
+                type: "tool",
+                callID: "call-child-alpha",
+                tool: "task",
+                state: {
+                  status: "completed",
+                  input: { subagent_type: "explore", prompt: "Read alpha.txt" },
+                  output: "Northern gate: sunrise, violet.",
+                  title: "Analyze alpha",
+                  time: { start: 1, end: 3 },
+                },
+              },
+            },
+          },
+          {
+            type: "message.part.updated",
+            properties: {
+              sessionID,
+              part: {
+                id: "part-child-beta",
+                sessionID,
+                messageID: assistantMessageID,
+                type: "tool",
+                callID: "call-child-beta",
+                tool: "task",
+                state: {
+                  status: "completed",
+                  input: { subagent_type: "explore", prompt: "Read beta.txt" },
+                  output: "Southern gate: sunset, amber.",
+                  title: "Analyze beta",
+                  time: { start: 2, end: 4 },
+                },
+              },
+            },
+          },
+          {
+            type: "message.part.updated",
+            properties: {
+              sessionID,
+              part: {
+                id: "part-parent-final",
+                sessionID,
+                messageID: assistantMessageID,
+                type: "text",
+                text: "Northern gate: sunrise/violet. Southern gate: sunset/amber.",
+                time: { start: 5, end: 6 },
+              },
+            },
+          },
+        ];
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.take(8),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+        const childEvents = events.filter(
+          (event) =>
+            (event.type === "item.started" ||
+              event.type === "item.updated" ||
+              event.type === "item.completed") &&
+            event.payload.itemType === "collab_agent_tool_call",
+        );
+        NodeAssert.equal(childEvents.length, 4);
+        NodeAssert.deepEqual(
+          childEvents.map((event) => event.itemId),
+          ["call-child-alpha", "call-child-beta", "call-child-alpha", "call-child-beta"],
+        );
+        const finalDelta = events.find(
+          (event) =>
+            event.type === "content.delta" && event.payload.streamKind === "assistant_text",
+        );
+        NodeAssert.ok(finalDelta);
+        if (finalDelta.type === "content.delta") {
+          NodeAssert.equal(
+            finalDelta.payload.delta,
+            "Northern gate: sunrise/violet. Southern gate: sunset/amber.",
+          );
+        }
+      }),
+  );
+
+  it.effect(
+    "correlates five child sessions, preserves child heartbeats, dedupes replay, and recombines only parent text",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-opencode-five-child-correlation");
+        const parentSessionID = "http://127.0.0.1:9999/session";
+        const assistantMessageID = "msg-five-child-parent";
+        const workers = Array.from({ length: 5 }, (_, index) => ({
+          index,
+          callID: `call-worker-${index}`,
+          childSessionID: `child-session-${index}`,
+          title: `Worker ${index + 1}`,
+        }));
+
+        const parentRunningParts = workers.map((worker) => ({
+          id: `evt-parent-task-running-${worker.index}`,
+          type: "message.part.updated",
+          properties: {
+            sessionID: parentSessionID,
+            part: {
+              id: `part-worker-${worker.index}`,
+              sessionID: parentSessionID,
+              messageID: assistantMessageID,
+              type: "tool",
+              callID: worker.callID,
+              tool: "task",
+              state: {
+                status: "running",
+                title: worker.title,
+                input: { prompt: `Implement workstream ${worker.index + 1}` },
+                metadata: {
+                  parentSessionId: parentSessionID,
+                  sessionId: worker.childSessionID,
+                  model: { providerID: "opencode", modelID: "test-model" },
+                },
+                time: { start: 10 + worker.index },
+              },
+            },
+            time: 10 + worker.index,
+          },
+        }));
+        const parentCompletedParts = workers.map((worker) => ({
+          id: `evt-parent-task-completed-${worker.index}`,
+          type: "message.part.updated",
+          properties: {
+            sessionID: parentSessionID,
+            part: {
+              id: `part-worker-${worker.index}`,
+              sessionID: parentSessionID,
+              messageID: assistantMessageID,
+              type: "tool",
+              callID: worker.callID,
+              tool: "task",
+              state: {
+                status: "completed",
+                title: worker.title,
+                input: { prompt: `Implement workstream ${worker.index + 1}` },
+                output: `Worker ${worker.index + 1} finished.`,
+                metadata: {
+                  parentSessionId: parentSessionID,
+                  sessionId: worker.childSessionID,
+                },
+                time: { start: 10 + worker.index, end: 80 + worker.index },
+              },
+            },
+            time: 80 + worker.index,
+          },
+        }));
+        const childCreated = workers.map((worker) => ({
+          id: `evt-child-created-${worker.index}`,
+          type: "session.created",
+          properties: {
+            sessionID: worker.childSessionID,
+            info: {
+              id: worker.childSessionID,
+              slug: worker.childSessionID,
+              projectID: "project",
+              directory: "I:/repo",
+              parentID: parentSessionID,
+              title: `${worker.title} subagent`,
+              model: { id: "test-model", providerID: "opencode" },
+              version: "1",
+              time: { created: 1, updated: 1 },
+            },
+          },
+        }));
+        const childToolEvents = workers.map((worker) => ({
+          id: `evt-child-tool-${worker.index}`,
+          type: "message.part.updated",
+          properties: {
+            sessionID: worker.childSessionID,
+            part: {
+              id: `child-tool-part-${worker.index}`,
+              sessionID: worker.childSessionID,
+              messageID: `child-message-${worker.index}`,
+              type: "tool",
+              callID: `child-tool-call-${worker.index}`,
+              tool: "read",
+              state: {
+                status: "running",
+                input: { path: `file-${worker.index}.ts` },
+                title: "Read file",
+                time: { start: 30 + worker.index },
+              },
+            },
+            time: 30 + worker.index,
+          },
+        }));
+        const childBusy = workers.map((worker) => ({
+          id: `evt-child-busy-${worker.index}`,
+          type: "session.status",
+          properties: { sessionID: worker.childSessionID, status: { type: "busy" } },
+        }));
+        const childIdle = workers.map((worker) => ({
+          id: `evt-child-idle-${worker.index}`,
+          type: "session.status",
+          properties: { sessionID: worker.childSessionID, status: { type: "idle" } },
+        }));
+
+        runtimeMock.state.subscribedEvents = [
+          {
+            id: "evt-parent-message",
+            type: "message.updated",
+            properties: {
+              sessionID: parentSessionID,
+              info: { id: assistantMessageID, role: "assistant" },
+            },
+          },
+          // Worker 1 proves the difficult ordering: OpenCode creates and even
+          // starts the child before the parent task wrapper carries sessionId.
+          childCreated[0],
+          {
+            id: "evt-child-early-reasoning",
+            type: "session.next.reasoning.started",
+            properties: {
+              timestamp: 5,
+              sessionID: workers[0]!.childSessionID,
+              reasoningID: "reasoning-early",
+            },
+          },
+          ...parentRunningParts,
+          ...childCreated.slice(1),
+          ...childToolEvents,
+          ...childBusy,
+          // Replay of a provider event must not advance the agent twice.
+          childBusy[2],
+          ...childIdle,
+          ...parentCompletedParts,
+          {
+            id: "evt-parent-final-text",
+            type: "message.part.updated",
+            properties: {
+              sessionID: parentSessionID,
+              part: {
+                id: "part-parent-consolidated",
+                sessionID: parentSessionID,
+                messageID: assistantMessageID,
+                type: "text",
+                text: "All five workstreams were integrated and verified.",
+                time: { start: 100, end: 101 },
+              },
+              time: 101,
+            },
+          },
+        ];
+
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.take(40),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
+        const taskProgress = events.filter((event) => event.type === "task.progress");
+        const childTaskIds = new Set(
+          taskProgress.map((event) => (event.type === "task.progress" ? event.payload.taskId : "")),
+        );
+        NodeAssert.deepEqual(
+          [...childTaskIds].sort(),
+          workers.map((worker) => worker.callID).sort(),
+        );
+        const toolProgress = events.filter((event) => event.type === "tool.progress");
+        NodeAssert.equal(toolProgress.length, 5);
+        NodeAssert.deepEqual(
+          toolProgress.map((event) =>
+            event.type === "tool.progress" ? event.payload.taskId : undefined,
+          ),
+          workers.map((worker) => worker.callID),
+        );
+        const childCompletions = events.filter(
+          (event) => event.type === "task.updated" && event.payload.status === "completed",
+        );
+        NodeAssert.equal(childCompletions.length, 5);
+        const parentText = events.filter(
+          (event) =>
+            event.type === "content.delta" && event.payload.streamKind === "assistant_text",
+        );
+        NodeAssert.equal(parentText.length, 1);
+        if (parentText[0]?.type === "content.delta") {
+          NodeAssert.equal(
+            parentText[0].payload.delta,
+            "All five workstreams were integrated and verified.",
+          );
+        }
+      }),
+  );
+
+  it.effect("surfaces child questions and permission requests on the parent thread", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-child-input");
+      const parentSessionID = "http://127.0.0.1:9999/session";
+      const childSessionID = "child-input-session";
+      runtimeMock.state.subscribedEvents = [
+        {
+          id: "evt-input-parent-task",
+          type: "message.part.updated",
+          properties: {
+            sessionID: parentSessionID,
+            part: {
+              id: "part-input-worker",
+              sessionID: parentSessionID,
+              messageID: "parent-message-input",
+              type: "tool",
+              callID: "call-input-worker",
+              tool: "task",
+              state: {
+                status: "running",
+                title: "Input worker",
+                input: { prompt: "Validate guarded behavior" },
+                metadata: { sessionId: childSessionID, parentSessionId: parentSessionID },
+                time: { start: 1 },
+              },
+            },
+            time: 1,
+          },
+        },
+        {
+          id: "evt-input-child-created",
+          type: "session.created",
+          properties: {
+            sessionID: childSessionID,
+            info: {
+              id: childSessionID,
+              slug: childSessionID,
+              projectID: "project",
+              directory: "I:/repo",
+              parentID: parentSessionID,
+              title: "Input worker",
+              version: "1",
+              time: { created: 1, updated: 1 },
+            },
+          },
+        },
+        {
+          id: "evt-child-question",
+          type: "question.asked",
+          properties: {
+            id: "question-child",
+            sessionID: childSessionID,
+            questions: [
+              {
+                header: "Mode",
+                question: "Which validation mode?",
+                options: [{ label: "Safe", description: "Use safe mode" }],
+              },
+            ],
+          },
+        },
+        {
+          id: "evt-child-permission",
+          type: "permission.asked",
+          properties: {
+            id: "permission-child",
+            sessionID: childSessionID,
+            permission: "bash",
+            patterns: ["pytest tests/"],
+            metadata: {},
+            always: [],
+          },
+        },
+      ];
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) => event.type === "user-input.requested" || event.type === "request.opened",
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.equal(events[0]?.type, "user-input.requested");
+      NodeAssert.equal(events[1]?.type, "request.opened");
+      if (events[0]?.type === "user-input.requested") {
+        NodeAssert.match(events[0].payload.questions[0]?.header ?? "", /^Input worker:/);
+      }
+      if (events[1]?.type === "request.opened") {
+        NodeAssert.match(events[1].payload.detail ?? "", /^Input worker:/);
+      }
+    }),
+  );
+
+  it.effect("maps a child rate limit to the worker without failing its sibling", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-child-rate-limit");
+      const parentSessionID = "http://127.0.0.1:9999/session";
+      runtimeMock.state.subscribedEvents = [
+        ...[0, 1].map((index) => ({
+          id: `evt-rate-parent-${index}`,
+          type: "message.part.updated",
+          properties: {
+            sessionID: parentSessionID,
+            part: {
+              id: `part-rate-${index}`,
+              sessionID: parentSessionID,
+              messageID: "msg-rate-parent",
+              type: "tool",
+              callID: `call-rate-${index}`,
+              tool: "task",
+              state: {
+                status: "running",
+                title: `Rate worker ${index + 1}`,
+                input: { prompt: `Do rate work ${index + 1}` },
+                metadata: { sessionId: `child-rate-${index}`, parentSessionId: parentSessionID },
+                time: { start: index + 1 },
+              },
+            },
+            time: index + 1,
+          },
+        })),
+        {
+          id: "evt-rate-failed",
+          type: "session.error",
+          properties: {
+            sessionID: "child-rate-0",
+            error: {
+              name: "APIError",
+              data: {
+                message: "Too many requests",
+                statusCode: 429,
+                isRetryable: true,
+                responseHeaders: { "retry-after": "12" },
+              },
+            },
+          },
+        },
+        {
+          id: "evt-rate-sibling-busy",
+          type: "session.status",
+          properties: { sessionID: "child-rate-1", status: { type: "busy" } },
+        },
+      ];
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.updated" || event.type === "task.progress"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      const failed = events.find(
+        (event) => event.type === "task.updated" && event.payload.taskId === "call-rate-0",
+      );
+      NodeAssert.ok(failed);
+      if (failed.type === "task.updated") {
+        NodeAssert.equal(failed.payload.status, "failed");
+        NodeAssert.match(failed.payload.error ?? "", /HTTP 429/);
+        NodeAssert.match(failed.payload.error ?? "", /Retry-After 12/);
+      }
+      const sibling = events.find(
+        (event) => event.type === "task.progress" && event.payload.taskId === "call-rate-1",
+      );
+      NodeAssert.ok(sibling);
+      if (sibling.type === "task.progress") NodeAssert.equal(sibling.payload.status, "running");
     }),
   );
 

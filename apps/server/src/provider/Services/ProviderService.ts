@@ -20,6 +20,10 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderSwarmLaunchAgentResolvedInput,
+  ProviderSwarmLaunchAgentResult,
+  ProviderSwarmMessageAgentInput,
+  ProviderSwarmStopAgentInput,
   ProviderStopSessionInput,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
@@ -79,6 +83,18 @@ export interface ProviderServiceShape {
    */
   readonly stopSession: (
     input: ProviderStopSessionInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly launchSwarmAgent: (
+    input: ProviderSwarmLaunchAgentResolvedInput,
+  ) => Effect.Effect<ProviderSwarmLaunchAgentResult, ProviderServiceError>;
+
+  readonly messageSwarmAgent: (
+    input: ProviderSwarmMessageAgentInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly stopSwarmAgent: (
+    input: ProviderSwarmStopAgentInput,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**

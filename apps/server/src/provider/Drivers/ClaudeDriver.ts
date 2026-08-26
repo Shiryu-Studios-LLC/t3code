@@ -77,6 +77,10 @@ const UPDATE = makePackageManagedProviderMaintenanceResolver({
     executable: "claude",
     args: ["update"],
     lockKey: "claude-native",
+    // Anthropic's native updater follows the stable channel. npm's `latest`
+    // currently tracks the preview/next build, so comparing a native install
+    // against `latest` creates a permanent false-positive update warning.
+    versionTag: "stable",
     isCommandPath: isClaudeNativeCommandPath,
   },
 });

@@ -26,6 +26,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -37,7 +38,7 @@ import {
   workEntryDisplayIndicatesToolFailure,
   workLogEntryIsToolLike,
 } from "../../session-logic";
-import { type TurnDiffSummary } from "../../types";
+import { type ChatImageAttachment, type TurnDiffSummary } from "../../types";
 import {
   getRenderablePatch,
   resolveDiffThemeName,
@@ -51,15 +52,20 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   EyeIcon,
+  FileIcon,
   GlobeIcon,
   HammerIcon,
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
+  PauseIcon,
+  PlayIcon,
   SearchIcon,
+  SquareIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
+  Volume2Icon,
   WrenchIcon,
   XIcon,
   ZapIcon,
@@ -75,6 +81,7 @@ import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
+  normalizeFriendlyAgentTaskResult,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
   resolveTimelineMinimapHasPersistentGutter,
@@ -106,6 +113,16 @@ import {
   type ParsedPreviewAnnotation,
 } from "~/lib/previewAnnotation";
 import { cn } from "~/lib/utils";
+import { useEnvironmentSettings } from "~/hooks/useSettings";
+import {
+  getTextToSpeechPlaybackState,
+  pauseTextToSpeech,
+  playTextToSpeech,
+  resumeTextToSpeech,
+  shouldAutoReadAssistantMessage,
+  stopTextToSpeech,
+  subscribeTextToSpeechPlayback,
+} from "~/tts/ttsController";
 import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
@@ -987,7 +1004,11 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const userImages = row.message.attachments ?? [];
+  const userAttachments = row.message.attachments ?? [];
+  const userImages = userAttachments.filter(
+    (attachment): attachment is ChatImageAttachment => attachment.type === "image",
+  );
+  const userFiles = userAttachments.filter((attachment) => attachment.type === "file");
   const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
   const terminalContexts = displayedUserMessage.contexts;
   const previewAnnotations: ParsedPreviewAnnotation[] = [];
@@ -1010,9 +1031,23 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   return (
     <div className="group flex flex-col items-end gap-1">
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
+        {userFiles.length > 0 && (
+          <div className="mb-2 flex max-w-[420px] flex-wrap gap-1.5">
+            {userFiles.map((file) => (
+              <div
+                key={file.id}
+                className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border/80 bg-background/70 px-2.5 py-2 text-xs"
+                title={file.name}
+              >
+                <FileIcon className="size-3.5 shrink-0 text-secondary-label" />
+                <span className="truncate">{file.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
         {regularImages.length > 0 && (
           <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
-            {regularImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
+            {regularImages.map((image: ChatImageAttachment) => (
               <div
                 key={image.id}
                 className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
@@ -1137,13 +1172,47 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const ttsSettings = useEnvironmentSettings(ctx.activeThreadEnvironmentId, (settings) => ({
+    enabled: settings.textToSpeechEnabled,
+    autoRead: settings.textToSpeechAutoRead,
+  }));
+  const ttsPlayback = useSyncExternalStore(
+    subscribeTextToSpeechPlayback,
+    getTextToSpeechPlaybackState,
+    getTextToSpeechPlaybackState,
+  );
+  const isActiveTtsMessage = ttsPlayback.messageId === String(row.message.id);
+  const isTtsPlaying = isActiveTtsMessage && ttsPlayback.status === "playing";
+  const isTtsPaused = isActiveTtsMessage && ttsPlayback.status === "paused";
+
+  useEffect(() => {
+    if (!ttsSettings.enabled) return;
+    if (shouldAutoReadAssistantMessage(String(row.message.id), Boolean(row.message.streaming))) {
+      void playTextToSpeech(messageText, String(row.message.id)).catch((error) => {
+        console.error("[TTS] auto-read failed", error);
+      });
+    }
+  }, [
+    messageText,
+    row.message.id,
+    row.message.streaming,
+    ttsSettings.autoRead,
+    ttsSettings.enabled,
+  ]);
 
   return (
     <>
-      <div className="relative min-w-0 px-1 py-0.5">
+      <div
+        className={cn(
+          "relative min-w-0 rounded-md px-1 py-0.5 transition-colors",
+          isActiveTtsMessage && "bg-primary/5 ring-1 ring-inset ring-primary/15",
+        )}
+        data-tts-active={isActiveTtsMessage || undefined}
+      >
         <ChatMarkdown
           text={messageText}
           cwd={ctx.markdownCwd}
+          workspaceRoot={ctx.workspaceRoot}
           threadRef={ctx.threadRef ?? undefined}
           isStreaming={Boolean(row.message.streaming)}
           lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
@@ -1156,8 +1225,54 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           onOpenTurnDiff={ctx.onOpenTurnDiff}
         />
         {row.showAssistantMeta ? (
-          <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">
+          <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-100 transition-opacity duration-200 md:opacity-0 md:focus-within:opacity-100 md:group-hover/assistant:opacity-100">
             <AssistantCopyButton row={row} />
+            {ttsSettings.enabled && !row.message.streaming ? (
+              <div className="flex items-center gap-0.5">
+                <Button
+                  aria-label={
+                    isTtsPlaying
+                      ? "Pause speech"
+                      : isTtsPaused
+                        ? "Resume speech"
+                        : "Read response aloud"
+                  }
+                  size="icon-xs"
+                  variant="ghost"
+                  onClick={() => {
+                    if (isTtsPlaying) {
+                      pauseTextToSpeech();
+                      return;
+                    }
+                    if (isTtsPaused) {
+                      resumeTextToSpeech();
+                      return;
+                    }
+                    void playTextToSpeech(messageText, String(row.message.id)).catch((error) => {
+                      console.error("[TTS] playback failed", error);
+                    });
+                  }}
+                >
+                  {isTtsPlaying ? (
+                    <PauseIcon className="size-3.5" />
+                  ) : isTtsPaused ? (
+                    <PlayIcon className="size-3.5" />
+                  ) : (
+                    <Volume2Icon className="size-3.5" />
+                  )}
+                </Button>
+                {isActiveTtsMessage ? (
+                  <Button
+                    aria-label="Stop speech"
+                    size="icon-xs"
+                    variant="ghost"
+                    onClick={stopTextToSpeech}
+                  >
+                    <SquareIcon className="size-3" />
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
             {!row.message.streaming && (
               <Tooltip>
                 <TooltipTrigger
@@ -1733,7 +1848,7 @@ const UserMessageElementContextChip = memo(function UserMessageElementContextChi
 
 function UserMessagePreviewAnnotationCard(props: {
   annotation: ParsedPreviewAnnotation;
-  image: NonNullable<TimelineMessage["attachments"]>[number] | null;
+  image: ChatImageAttachment | null;
 }) {
   const ctx = use(TimelineRowCtx);
   return (
@@ -2441,7 +2556,11 @@ function buildToolCallExpandedBody(
     blocks.push(workEntry.command.trim());
   }
   if (workEntry.detail?.trim()) {
-    blocks.push(workEntry.detail.trim());
+    const detail =
+      workEntry.itemType === "collab_agent_tool_call" || workEntry.taskId
+        ? normalizeFriendlyAgentTaskResult(workEntry.detail).cleanedMarkdown
+        : workEntry.detail.trim();
+    if (detail) blocks.push(detail);
   }
   const changedFiles = workEntry.changedFiles ?? [];
   if (changedFiles.length > 0) {
@@ -2624,9 +2743,20 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   const iconConfig = workToneIcon(workEntry.tone);
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
   const showFailedIndicator = workEntryDisplayIndicatesToolFailure(workEntry);
+  const friendlyAgentResult =
+    workEntry.itemType === "collab_agent_tool_call" || workEntry.taskId
+      ? normalizeFriendlyAgentTaskResult(workEntry.detail ?? "")
+      : null;
   const entryIconName =
     showWarningIndicator || showFailedIndicator ? "x" : workEntryIconName(workEntry);
-  const displayText = workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry);
+  const displayText =
+    friendlyAgentResult?.hadInternalMarkup && friendlyAgentResult.completed
+      ? `✓ Completed · ${
+          workEntry.toolTitle && normalizeCompactToolLabel(workEntry.toolTitle) !== "task"
+            ? capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle))
+            : "Agent task"
+        }`
+      : (workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry));
   const expandedBody = buildToolCallExpandedBody(workEntry, workspaceRoot);
   const canExpand = expandedBody !== null;
   const showDestructiveRowStyle =
@@ -2719,7 +2849,19 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
         >
-          <pre className={toolCallExpandedBodyClassName}>{expandedBody}</pre>
+          {friendlyAgentResult?.hadInternalMarkup ? (
+            <div className="max-h-64 overflow-auto text-sm text-secondary-label">
+              <ChatMarkdown
+                text={expandedBody}
+                cwd={undefined}
+                isStreaming={false}
+                lineBreaks={false}
+                skills={EMPTY_TIMELINE_SKILLS}
+              />
+            </div>
+          ) : (
+            <pre className={toolCallExpandedBodyClassName}>{expandedBody}</pre>
+          )}
         </div>
       ) : null}
     </div>

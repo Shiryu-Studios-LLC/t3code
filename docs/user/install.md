@@ -1,6 +1,6 @@
-# Install T3 Code
+# Install T3 Studio
 
-T3 Code is a web and desktop GUI for running coding agents on your machine.
+T3 Studio by Shiryu Studios is a web and desktop workspace for running individual coding agents and coordinated Swarms on your machine.
 
 ## Requirements
 

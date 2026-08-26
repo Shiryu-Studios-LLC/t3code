@@ -1,8 +1,8 @@
 # Architecture
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using T3 Studio? See [docs/user](../user/).
 
-T3 Code is a server runtime that owns agent sessions, workspaces, and version control, plus clients
+T3 Studio is a server runtime that owns agent sessions, workspaces, and version control, plus clients
 (web, desktop, mobile) that talk to it over one authenticated Effect RPC WebSocket. The server is the
 execution boundary: every provider process, terminal, git operation, and filesystem read happens
 there, never in the client.

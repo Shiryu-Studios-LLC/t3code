@@ -1061,6 +1061,18 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
   input: PreviewAutomationWaitForInput,
 });
 
+export const DesktopTextToSpeechSynthesizeInputSchema = Schema.Struct({
+  text: Schema.String.check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(4096)),
+  voice: Schema.String.check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(200)),
+  rate: Schema.Number.check(Schema.isBetween({ minimum: 0.25, maximum: 4 })),
+});
+export type DesktopTextToSpeechSynthesizeInput =
+  typeof DesktopTextToSpeechSynthesizeInputSchema.Type;
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   /**
@@ -1145,6 +1157,11 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  /**
+   * Generate speech on the current desktop device. Optional so a newer web
+   * bundle can continue to run inside an older desktop shell.
+   */
+  synthesizeSpeech?: (input: DesktopTextToSpeechSynthesizeInput) => Promise<Uint8Array>;
   /**
    * Desktop-only preview surface. Present iff the renderer is hosted by the
    * Electron desktop build; web builds have `preview === undefined`.

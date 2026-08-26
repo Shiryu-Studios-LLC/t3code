@@ -497,6 +497,7 @@ export type TaskWorkflowPhase = typeof TaskWorkflowPhase.Type;
 
 export const TaskRunHandles = Schema.Struct({
   runId: Schema.optional(TrimmedNonEmptyStringSchema),
+  workspacePath: Schema.optional(TrimmedNonEmptyStringSchema),
   scriptPath: Schema.optional(TrimmedNonEmptyStringSchema),
   transcriptDir: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Only http/https URLs may be stored here — sanitized at the adapter. */

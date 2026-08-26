@@ -33,7 +33,12 @@ import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model"
 import { useMemo } from "react";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
 import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
-import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type ChatImageAttachment } from "./types";
+import {
+  DEFAULT_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  type ChatFileAttachment,
+  type ChatImageAttachment,
+} from "./types";
 import {
   type TerminalContextDraft,
   ensureInlineTerminalContextPlaceholders,
@@ -91,6 +96,18 @@ export type PersistedComposerImageAttachment = typeof PersistedComposerImageAtta
 export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl"> {
   previewUrl: string;
   file: File;
+}
+
+export interface ComposerFileAttachment extends ChatFileAttachment {
+  file: File;
+}
+
+export type ComposerAttachment = ComposerImageAttachment | ComposerFileAttachment;
+
+export function isComposerImageAttachment(
+  attachment: ComposerAttachment,
+): attachment is ComposerImageAttachment {
+  return attachment.type === "image";
 }
 
 const PersistedTerminalContextDraft = Schema.Struct({
@@ -250,7 +267,8 @@ const PersistedComposerDraftStoreStorage = Schema.Struct({
  */
 export interface ComposerThreadDraftState {
   prompt: string;
-  images: ComposerImageAttachment[];
+  /** Runtime attachments. The historical field name is kept for persisted-store compatibility. */
+  images: ComposerAttachment[];
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
   terminalContexts: TerminalContextDraft[];
@@ -470,8 +488,8 @@ interface ComposerDraftStoreState {
     threadRef: ComposerThreadTarget,
     interactionMode: ProviderInteractionMode | null | undefined,
   ) => void;
-  addImage: (threadRef: ComposerThreadTarget, image: ComposerImageAttachment) => void;
-  addImages: (threadRef: ComposerThreadTarget, images: ComposerImageAttachment[]) => void;
+  addImage: (threadRef: ComposerThreadTarget, image: ComposerAttachment) => void;
+  addImages: (threadRef: ComposerThreadTarget, images: ComposerAttachment[]) => void;
   removeImage: (threadRef: ComposerThreadTarget, imageId: string) => void;
   insertTerminalContext: (
     threadRef: ComposerThreadTarget,
@@ -603,7 +621,7 @@ const EMPTY_PERSISTED_DRAFT_STORE_STATE = Object.freeze<PersistedComposerDraftSt
   stickyActiveProvider: null,
 });
 
-const EMPTY_IMAGES: ComposerImageAttachment[] = [];
+const EMPTY_IMAGES: ComposerAttachment[] = [];
 const EMPTY_IDS: string[] = [];
 const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerImageAttachment[] = [];
 const EMPTY_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
@@ -661,7 +679,7 @@ export function createEmptyThreadDraft(): ComposerThreadDraftState {
   };
 }
 
-function composerImageDedupKey(image: ComposerImageAttachment): string {
+function composerImageDedupKey(image: ComposerAttachment): string {
   // Keep this independent from File.lastModified so dedupe is stable for hydrated
   // images reconstructed from localStorage (which get a fresh lastModified value).
   return `${image.mimeType}\u0000${image.sizeBytes}\u0000${image.name}`;
@@ -1084,8 +1102,10 @@ function revokeDraftThreadPreviewUrls(draft: ComposerThreadDraftState | undefine
   if (!draft) {
     return;
   }
-  for (const image of draft.images) {
-    revokeObjectPreviewUrl(image.previewUrl);
+  for (const attachment of draft.images) {
+    if (isComposerImageAttachment(attachment)) {
+      revokeObjectPreviewUrl(attachment.previewUrl);
+    }
   }
 }
 
@@ -2976,21 +2996,28 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const existingDedupKeys = new Set(
               existing.images.map((image) => composerImageDedupKey(image)),
             );
-            const acceptedPreviewUrls = new Set(existing.images.map((image) => image.previewUrl));
-            const dedupedIncoming: ComposerImageAttachment[] = [];
-            for (const image of images) {
-              const dedupKey = composerImageDedupKey(image);
-              if (existingIds.has(image.id) || existingDedupKeys.has(dedupKey)) {
+            const acceptedPreviewUrls = new Set(
+              existing.images.filter(isComposerImageAttachment).map((image) => image.previewUrl),
+            );
+            const dedupedIncoming: ComposerAttachment[] = [];
+            for (const attachment of images) {
+              const dedupKey = composerImageDedupKey(attachment);
+              if (existingIds.has(attachment.id) || existingDedupKeys.has(dedupKey)) {
                 // Avoid revoking a blob URL that's still referenced by an accepted image.
-                if (!acceptedPreviewUrls.has(image.previewUrl)) {
-                  revokeObjectPreviewUrl(image.previewUrl);
+                if (
+                  isComposerImageAttachment(attachment) &&
+                  !acceptedPreviewUrls.has(attachment.previewUrl)
+                ) {
+                  revokeObjectPreviewUrl(attachment.previewUrl);
                 }
                 continue;
               }
-              dedupedIncoming.push(image);
-              existingIds.add(image.id);
+              dedupedIncoming.push(attachment);
+              existingIds.add(attachment.id);
               existingDedupKeys.add(dedupKey);
-              acceptedPreviewUrls.add(image.previewUrl);
+              if (isComposerImageAttachment(attachment)) {
+                acceptedPreviewUrls.add(attachment.previewUrl);
+              }
             }
             if (dedupedIncoming.length === 0) {
               return state;
@@ -3016,7 +3043,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             return;
           }
           const removedImage = existing.images.find((image) => image.id === imageId);
-          if (removedImage) {
+          if (removedImage && isComposerImageAttachment(removedImage)) {
             revokeObjectPreviewUrl(removedImage.previewUrl);
           }
           set((state) => {
@@ -3468,7 +3495,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             for (const image of current.images) {
-              revokeObjectPreviewUrl(image.previewUrl);
+              if (isComposerImageAttachment(image)) {
+                revokeObjectPreviewUrl(image.previewUrl);
+              }
             }
             const nextDraft: ComposerThreadDraftState = {
               ...current,

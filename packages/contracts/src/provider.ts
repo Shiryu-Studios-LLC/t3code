@@ -110,6 +110,68 @@ export const ProviderRespondToUserInputInput = Schema.Struct({
 });
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
 
+export const ProviderSwarmWorkspaceStrategy = Schema.Literals(["shared", "worktree"]);
+export type ProviderSwarmWorkspaceStrategy = typeof ProviderSwarmWorkspaceStrategy.Type;
+
+export const ProviderSwarmLaunchAgentInput = Schema.Struct({
+  threadId: ThreadId,
+  task: TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  workspaceStrategy: ProviderSwarmWorkspaceStrategy,
+  /** Repository checkout used as the source when creating an isolated worktree. */
+  projectCwd: Schema.optional(TrimmedNonEmptyString),
+  /** Base branch/ref for isolated worktree creation. */
+  baseRefName: Schema.optional(TrimmedNonEmptyString),
+  modelSelection: Schema.optional(ModelSelection),
+});
+export type ProviderSwarmLaunchAgentInput = typeof ProviderSwarmLaunchAgentInput.Type;
+
+export const ProviderSwarmLaunchAgentResolvedInput = Schema.Struct({
+  threadId: ThreadId,
+  task: TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  directory: Schema.optional(TrimmedNonEmptyString),
+  workspaceStrategy: ProviderSwarmWorkspaceStrategy,
+  modelSelection: Schema.optional(ModelSelection),
+});
+export type ProviderSwarmLaunchAgentResolvedInput =
+  typeof ProviderSwarmLaunchAgentResolvedInput.Type;
+
+export const ProviderSwarmLaunchAgentResult = Schema.Struct({
+  agentId: TrimmedNonEmptyString,
+  sessionId: Schema.optional(TrimmedNonEmptyString),
+  title: TrimmedNonEmptyString,
+  workspaceStrategy: ProviderSwarmWorkspaceStrategy,
+  workspacePath: Schema.optional(TrimmedNonEmptyString),
+});
+export type ProviderSwarmLaunchAgentResult = typeof ProviderSwarmLaunchAgentResult.Type;
+
+export const ProviderSwarmMessageAgentInput = Schema.Struct({
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString,
+  message: TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+});
+export type ProviderSwarmMessageAgentInput = typeof ProviderSwarmMessageAgentInput.Type;
+
+export const ProviderSwarmStopAgentInput = Schema.Struct({
+  threadId: ThreadId,
+  agentId: TrimmedNonEmptyString,
+});
+export type ProviderSwarmStopAgentInput = typeof ProviderSwarmStopAgentInput.Type;
+
+export class ProviderSwarmControlError extends Schema.TaggedErrorClass<ProviderSwarmControlError>()(
+  "ProviderSwarmControlError",
+  {
+    threadId: ThreadId,
+    operation: TrimmedNonEmptyString,
+    detail: TrimmedNonEmptyString,
+  },
+) {
+  override get message(): string {
+    return `${this.operation} failed for thread ${this.threadId}: ${this.detail}`;
+  }
+}
+
 export const ProviderUploadFeedbackInput = Schema.Struct({
   threadId: ThreadId,
   reason: Schema.optional(TrimmedNonEmptyString),

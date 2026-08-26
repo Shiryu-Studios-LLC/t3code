@@ -18,6 +18,9 @@ import {
   ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
+  ProviderSwarmLaunchAgentResolvedInput,
+  ProviderSwarmMessageAgentInput,
+  ProviderSwarmStopAgentInput,
   ProviderStopSessionInput,
   ProviderUploadFeedbackInput,
   type ProviderInstanceId,
@@ -729,9 +732,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
 
-    // Adapters inline attachment pixels into the model prompt, but the model's
-    // tools cannot dereference pixels. Appending the on-disk path is what lets
-    // a turn like "include this screenshot in the PR" copy the actual file.
+    // Image-capable adapters may inline pixels into the model prompt, while
+    // generic files intentionally stay as host-side files. Appending the
+    // on-disk path lets coding agents read/copy either kind with their tools.
     // This runs after schema decode, so the appended lines are exempt from the
     // PROVIDER_SEND_TURN_MAX_INPUT_CHARS check; attachment count is capped, so
     // the overhead is bounded. Unresolvable ids are skipped here and surface
@@ -935,6 +938,72 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       }),
     );
   });
+
+  const launchSwarmAgent: ProviderServiceMethod<"launchSwarmAgent"> = Effect.fn("launchSwarmAgent")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.launchSwarmAgent",
+        schema: ProviderSwarmLaunchAgentResolvedInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.launchSwarmAgent",
+        allowRecovery: true,
+      });
+      if (!routed.adapter.launchSwarmAgent) {
+        return yield* toValidationError(
+          "ProviderService.launchSwarmAgent",
+          `Provider '${routed.adapter.provider}' does not support native swarm launch controls.`,
+        );
+      }
+      return yield* routed.adapter.launchSwarmAgent(input);
+    },
+  );
+
+  const messageSwarmAgent: ProviderServiceMethod<"messageSwarmAgent"> = Effect.fn(
+    "messageSwarmAgent",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.messageSwarmAgent",
+      schema: ProviderSwarmMessageAgentInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.messageSwarmAgent",
+      allowRecovery: true,
+    });
+    if (!routed.adapter.messageSwarmAgent) {
+      return yield* toValidationError(
+        "ProviderService.messageSwarmAgent",
+        `Provider '${routed.adapter.provider}' does not support native swarm messaging.`,
+      );
+    }
+    yield* routed.adapter.messageSwarmAgent(input);
+  });
+
+  const stopSwarmAgent: ProviderServiceMethod<"stopSwarmAgent"> = Effect.fn("stopSwarmAgent")(
+    function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.stopSwarmAgent",
+        schema: ProviderSwarmStopAgentInput,
+        payload: rawInput,
+      });
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "ProviderService.stopSwarmAgent",
+        allowRecovery: true,
+      });
+      if (!routed.adapter.stopSwarmAgent) {
+        return yield* toValidationError(
+          "ProviderService.stopSwarmAgent",
+          `Provider '${routed.adapter.provider}' does not support native swarm stop controls.`,
+        );
+      }
+      yield* routed.adapter.stopSwarmAgent(input);
+    },
+  );
 
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
@@ -1225,6 +1294,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     interruptTurn,
     respondToRequest,
     respondToUserInput,
+    launchSwarmAgent,
+    messageSwarmAgent,
+    stopSwarmAgent,
     stopSession,
     listSessions,
     getCapabilities,

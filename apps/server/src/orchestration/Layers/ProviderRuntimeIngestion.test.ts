@@ -126,6 +126,9 @@ function createProviderServiceHarness() {
     },
     rollbackConversation: () => unsupported(),
     uploadFeedback: () => unsupported(),
+    launchSwarmAgent: () => unsupported(),
+    messageSwarmAgent: () => unsupported(),
+    stopSwarmAgent: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
     },

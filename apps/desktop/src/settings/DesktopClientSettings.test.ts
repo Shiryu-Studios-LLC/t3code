@@ -49,6 +49,11 @@ const clientSettings: ClientSettings = {
   sidebarThreadPreviewCount: 6,
   legacySidebarEnabled: false,
   timestampFormat: "24-hour",
+  textToSpeechEnabled: true,
+  textToSpeechAutoRead: true,
+  textToSpeechProvider: "openai",
+  textToSpeechVoice: "coral",
+  textToSpeechRate: 1.25,
   wordWrap: true,
 };
 

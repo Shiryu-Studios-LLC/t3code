@@ -44,6 +44,12 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 // machine). Give it generous headroom while still bounding a genuinely hung git.
 const WORKTREE_ADD_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+// `git status --porcelain=2` can legitimately be several megabytes in large
+// workspaces (for example, vendored engine/source trees with many untracked
+// files). Status is user-facing metadata, so give it substantially more room
+// than the generic command default and degrade to a partial file list instead
+// of failing the entire VCS surface if even this bound is exceeded.
+const STATUS_DETAILS_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
 const PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES = 49_000;
 const RANGE_COMMIT_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
@@ -1584,6 +1590,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ["status", "--porcelain=2", "--branch"],
       {
         allowNonZeroExit: true,
+        maxOutputBytes: STATUS_DETAILS_MAX_OUTPUT_BYTES,
+        appendTruncationMarker: true,
       },
     ).pipe(
       Effect.catchTags({
@@ -1690,10 +1698,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     let aheadCount = 0;
     let behindCount = 0;
     let aheadOfDefaultCount = 0;
-    let hasWorkingTreeChanges = false;
+    // If status output had to be capped, there were necessarily more status
+    // records than we could retain. Keep Git controls usable and report the
+    // tree as dirty; the files array below is then a bounded partial view.
+    let hasWorkingTreeChanges = statusResult.stdoutTruncated;
     const changedFilesWithoutNumstat = new Set<string>();
 
-    for (const line of statusStdout.split(/\r?\n/g)) {
+    const statusLines = statusStdout.split(/\r?\n/g);
+    // collectOutput can stop in the middle of a porcelain record. Never feed
+    // that incomplete trailing record to the parser, since it could otherwise
+    // fabricate a truncated path.
+    if (statusResult.stdoutTruncated && !statusStdout.endsWith("\n")) {
+      statusLines.pop();
+    }
+
+    for (const line of statusLines) {
       if (line.startsWith("# branch.head ")) {
         const value = line.slice("# branch.head ".length).trim();
         refName = value.startsWith("(") ? null : value;

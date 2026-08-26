@@ -185,6 +185,9 @@ describe("ProviderSessionReaper", () => {
       },
       rollbackConversation: () => unsupported(),
       uploadFeedback: () => unsupported(),
+      launchSwarmAgent: () => unsupported(),
+      messageSwarmAgent: () => unsupported(),
+      stopSwarmAgent: () => unsupported(),
       streamEvents: Stream.empty,
     };
 

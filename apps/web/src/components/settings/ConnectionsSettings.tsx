@@ -489,6 +489,47 @@ function resolveCurrentOriginPairingUrl(credential: string): string {
   return setPairingTokenOnUrl(url, credential).toString();
 }
 
+function normalizePublicPairingBaseUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "https:" || url.username || url.password) return null;
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/$/u, "");
+  } catch {
+    return null;
+  }
+}
+
+function publicPairingEndpoint(baseUrl: string): AdvertisedEndpoint {
+  const url = new URL(baseUrl);
+  url.protocol = "wss:";
+  return {
+    id: `manual-public:${baseUrl}`,
+    label: "Public tunnel",
+    provider: {
+      id: "manual-public",
+      label: "Public tunnel",
+      kind: "manual",
+      isAddon: false,
+    },
+    httpBaseUrl: baseUrl,
+    wsBaseUrl: url.toString().replace(/\/$/u, ""),
+    reachability: "public",
+    compatibility: {
+      hostedHttpsApp: "requires-configuration",
+      desktopApp: "compatible",
+    },
+    source: "user",
+    status: "available",
+    isDefault: true,
+    description: "User-configured public HTTPS endpoint for pairing links and QR codes.",
+  };
+}
+
 function isHostedAppPairingUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -1878,6 +1919,10 @@ export function ConnectionsSettings() {
   const setDefaultAdvertisedEndpointKey = useUiStateStore(
     (state) => state.setDefaultAdvertisedEndpointKey,
   );
+  const publicPairingBaseUrl = useUiStateStore((state) => state.publicPairingBaseUrl);
+  const setPublicPairingBaseUrl = useUiStateStore((state) => state.setPublicPairingBaseUrl);
+  const [publicPairingUrlDraft, setPublicPairingUrlDraft] = useState(publicPairingBaseUrl ?? "");
+  const [publicPairingUrlError, setPublicPairingUrlError] = useState<string | null>(null);
   const canManageLocalBackend = currentSessionScopes?.includes(AuthAccessWriteScope) ?? false;
   const canManageRelay = currentSessionScopes?.includes(AuthRelayWriteScope) ?? false;
   const authAccessChanges = useEnvironmentQuery(
@@ -2328,6 +2373,10 @@ export function ConnectionsSettings() {
   );
 
   const visibleDesktopPairingLinks = desktopPairingLinks;
+  const configuredPublicPairingEndpoint = useMemo(
+    () => (publicPairingBaseUrl ? publicPairingEndpoint(publicPairingBaseUrl) : null),
+    [publicPairingBaseUrl],
+  );
   const tailscaleHttpsEndpoint = useMemo(
     () => desktopAdvertisedEndpoints.find(isTailscaleHttpsEndpoint) ?? null,
     [desktopAdvertisedEndpoints],
@@ -2340,14 +2389,21 @@ export function ConnectionsSettings() {
     [desktopAdvertisedEndpoints, isLocalBackendNetworkAccessible],
   );
   const visibleDesktopAdvertisedEndpoints = useMemo(
-    () =>
-      tailscaleHttpsEndpoint
-        ? [...visibleDesktopNetworkAdvertisedEndpoints, tailscaleHttpsEndpoint]
-        : visibleDesktopNetworkAdvertisedEndpoints,
-    [tailscaleHttpsEndpoint, visibleDesktopNetworkAdvertisedEndpoints],
+    () => [
+      ...(configuredPublicPairingEndpoint ? [configuredPublicPairingEndpoint] : []),
+      ...visibleDesktopNetworkAdvertisedEndpoints,
+      ...(tailscaleHttpsEndpoint ? [tailscaleHttpsEndpoint] : []),
+    ],
+    [
+      configuredPublicPairingEndpoint,
+      tailscaleHttpsEndpoint,
+      visibleDesktopNetworkAdvertisedEndpoints,
+    ],
   );
   const isLocalBackendRemotelyReachable =
-    isLocalBackendNetworkAccessible || tailscaleHttpsEndpoint?.status === "available";
+    configuredPublicPairingEndpoint !== null ||
+    isLocalBackendNetworkAccessible ||
+    tailscaleHttpsEndpoint?.status === "available";
   const defaultDesktopNetworkAdvertisedEndpoint = useMemo(
     () =>
       selectPairingEndpoint(visibleDesktopNetworkAdvertisedEndpoints, defaultAdvertisedEndpointKey),
@@ -2355,12 +2411,18 @@ export function ConnectionsSettings() {
   );
   const defaultDesktopAdvertisedEndpoint = useMemo(
     () =>
+      configuredPublicPairingEndpoint ??
       defaultDesktopNetworkAdvertisedEndpoint ??
       selectPairingEndpoint(
         tailscaleHttpsEndpoint ? [tailscaleHttpsEndpoint] : [],
         defaultAdvertisedEndpointKey,
       ),
-    [defaultAdvertisedEndpointKey, defaultDesktopNetworkAdvertisedEndpoint, tailscaleHttpsEndpoint],
+    [
+      configuredPublicPairingEndpoint,
+      defaultAdvertisedEndpointKey,
+      defaultDesktopNetworkAdvertisedEndpoint,
+      tailscaleHttpsEndpoint,
+    ],
   );
   const defaultDesktopAdvertisedEndpointKey = defaultDesktopAdvertisedEndpoint
     ? endpointDefaultPreferenceKey(defaultDesktopAdvertisedEndpoint)
@@ -2371,6 +2433,30 @@ export function ConnectionsSettings() {
     },
     [setDefaultAdvertisedEndpointKey],
   );
+  const handleSavePublicPairingUrl = useCallback(() => {
+    if (publicPairingUrlDraft.trim().length === 0) {
+      setPublicPairingBaseUrl(null);
+      setPublicPairingUrlDraft("");
+      setPublicPairingUrlError(null);
+      return;
+    }
+    const normalized = normalizePublicPairingBaseUrl(publicPairingUrlDraft);
+    if (!normalized) {
+      setPublicPairingUrlError("Enter a valid HTTPS URL, for example https://t3.example.com.");
+      return;
+    }
+    setPublicPairingBaseUrl(normalized);
+    setPublicPairingUrlDraft(normalized);
+    setPublicPairingUrlError(null);
+    setDefaultAdvertisedEndpointKey(
+      endpointDefaultPreferenceKey(publicPairingEndpoint(normalized)),
+    );
+    toastManager.add({
+      type: "success",
+      title: "Public pairing URL saved",
+      description: "New pairing links and QR codes will prefer this public endpoint.",
+    });
+  }, [publicPairingUrlDraft, setDefaultAdvertisedEndpointKey, setPublicPairingBaseUrl]);
   const handleSavedBackendHostChange = useCallback((value: string) => {
     const parsedPairingUrl = parsePairingUrlFields(value);
     if (parsedPairingUrl) {
@@ -3063,6 +3149,37 @@ export function ConnectionsSettings() {
             {desktopBridge ? (
               <>
                 {renderNetworkAccessRow()}
+                <SettingsRow
+                  title="Public pairing URL"
+                  description={
+                    <span>
+                      Used for pairing links and QR codes when T3 is exposed through an existing
+                      HTTPS tunnel such as Cloudflare Tunnel.
+                      {publicPairingUrlError ? (
+                        <span className="mt-1 block text-destructive">{publicPairingUrlError}</span>
+                      ) : null}
+                    </span>
+                  }
+                  control={
+                    <div className="flex min-w-72 items-center gap-2">
+                      <Input
+                        value={publicPairingUrlDraft}
+                        onChange={(event) => {
+                          setPublicPairingUrlDraft(event.target.value);
+                          setPublicPairingUrlError(null);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") handleSavePublicPairingUrl();
+                        }}
+                        placeholder="https://t3.example.com"
+                        aria-label="Public pairing URL"
+                      />
+                      <Button size="sm" variant="outline" onClick={handleSavePublicPairingUrl}>
+                        Save
+                      </Button>
+                    </div>
+                  }
+                />
                 {renderEndpointRows("endpoint-rail")}
                 {renderTailscaleRow()}
                 {renderWslRow()}

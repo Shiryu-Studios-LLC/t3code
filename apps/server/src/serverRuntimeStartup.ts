@@ -296,6 +296,9 @@ const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>)
 const ORPHANED_PROVIDER_SESSION_ERROR =
   "Provider session did not survive a server restart. Send a new message to continue.";
 
+const RESTART_CONTINUATION_PROMPT =
+  "T3 Studio restarted while you were working. Resume the task from the persisted conversation and workspace state. Inspect the current files and prior progress, continue only the remaining work, run the appropriate verification, and report the result. Do not repeat work that is already complete.";
+
 export const reconcileProviderSessions = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
@@ -321,8 +324,70 @@ export const reconcileProviderSessions = Effect.gen(function* () {
     if (session === null) {
       continue;
     }
+    const binding = yield* directory.getBinding(thread.id).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("failed to read provider binding during restart recovery", {
+              threadId: thread.id,
+              cause,
+            }).pipe(Effect.as(Option.none())),
+      ),
+    );
+
+    // Provider conversations are durable even when the local adapter process
+    // is not. Re-adopt the persisted conversation before declaring the thread
+    // orphaned. If work was active, a small provider-side continuation turn
+    // lets coding agents resume from their own history and on-disk workspace
+    // after a desktop/server crash. This applies to every provider with a
+    // resume cursor; OpenCode also rebuilds its native child-agent bindings
+    // while the parent session is adopted.
+    const recovered =
+      Option.isSome(binding) && binding.value.resumeCursor !== undefined
+        ? yield* Effect.gen(function* () {
+            const resumed = yield* providerService.startSession(thread.id, {
+              threadId: thread.id,
+              provider: binding.value.provider,
+              providerInstanceId: binding.value.providerInstanceId,
+              runtimeMode: binding.value.runtimeMode ?? session.runtimeMode,
+              resumeCursor: binding.value.resumeCursor,
+            });
+            if (
+              session.status === "starting" ||
+              session.status === "running" ||
+              session.activeTurnId !== null
+            ) {
+              yield* providerService.sendTurn({
+                threadId: thread.id,
+                input: RESTART_CONTINUATION_PROMPT,
+              });
+            }
+            yield* Effect.logInfo("recovered provider session after restart", {
+              threadId: thread.id,
+              provider: resumed.provider,
+              continuedActiveWork:
+                session.status === "starting" ||
+                session.status === "running" ||
+                session.activeTurnId !== null,
+            });
+            return true;
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterrupts(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("provider session restart recovery failed", {
+                    threadId: thread.id,
+                    cause,
+                  }).pipe(Effect.as(false)),
+            ),
+          )
+        : false;
+
+    if (recovered) {
+      continue;
+    }
+
     yield* Effect.gen(function* () {
-      const binding = yield* directory.getBinding(thread.id);
       if (Option.isSome(binding)) {
         yield* directory.upsert({
           ...binding.value,

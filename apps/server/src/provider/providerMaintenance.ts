@@ -40,6 +40,7 @@ const readCommandLookupEnv = CommandLookupEnvConfig.pipe(Effect.orElseSucceed(()
 export interface ProviderMaintenanceCapabilities {
   readonly provider: ProviderDriverKind;
   readonly packageName: string | null;
+  readonly versionTag?: string;
   readonly update: ProviderMaintenanceCommandAction | null;
 }
 
@@ -71,6 +72,7 @@ export interface PackageManagedProviderMaintenanceDefinition {
     readonly executable: string;
     readonly args: ReadonlyArray<string>;
     readonly lockKey: string;
+    readonly versionTag?: string;
     readonly isCommandPath: (commandPath: string) => boolean;
   } | null;
 }
@@ -214,13 +216,16 @@ function makeNativeProviderMaintenanceCapabilities(
     return null;
   }
 
-  return makeProviderMaintenanceCapabilities({
+  const capabilities = makeProviderMaintenanceCapabilities({
     provider: definition.provider,
     packageName: definition.npmPackageName,
     updateExecutable: definition.nativeUpdate.executable,
     updateArgs: definition.nativeUpdate.args,
     updateLockKey: definition.nativeUpdate.lockKey,
   });
+  return definition.nativeUpdate.versionTag
+    ? { ...capabilities, versionTag: definition.nativeUpdate.versionTag }
+    : capabilities;
 }
 
 export function hasPathSeparator(value: string): boolean {
@@ -430,10 +435,13 @@ export function createProviderVersionAdvisory(input: {
   };
 }
 
-const fetchNpmLatestVersion = Effect.fn("fetchNpmLatestVersion")(function* (packageName: string) {
+const fetchNpmLatestVersion = Effect.fn("fetchNpmLatestVersion")(function* (
+  packageName: string,
+  versionTag: string,
+) {
   const client = yield* HttpClient.HttpClient;
   const request = HttpClientRequest.get(
-    `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,
+    `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(versionTag)}`,
   ).pipe(HttpClientRequest.setHeader("accept", "application/json"));
   const response = yield* client.execute(request).pipe(
     Effect.timeoutOption(LATEST_VERSION_TIMEOUT_MS),
@@ -460,16 +468,18 @@ export const resolveLatestProviderVersion = Effect.fn("resolveLatestProviderVers
   if (!packageName) {
     return null;
   }
+  const versionTag = maintenanceCapabilities.versionTag ?? "latest";
 
   const latestVersionCache = yield* ProviderVersionCache;
-  const cached = latestVersionCache.get(packageName);
+  const cacheKey = versionTag === "latest" ? packageName : `${packageName}@${versionTag}`;
+  const cached = latestVersionCache.get(cacheKey);
   const now = DateTime.toEpochMillis(yield* DateTime.now);
   if (cached && cached.expiresAt > now) {
     return cached.version;
   }
 
-  const version = yield* fetchNpmLatestVersion(packageName);
-  latestVersionCache.set(packageName, {
+  const version = yield* fetchNpmLatestVersion(packageName, versionTag);
+  latestVersionCache.set(cacheKey, {
     expiresAt: now + LATEST_VERSION_CACHE_TTL_MS,
     version,
   });

@@ -12,6 +12,7 @@ import {
   reorderProjects,
   resolveProjectExpanded,
   setDefaultAdvertisedEndpointKey,
+  setPublicPairingBaseUrl,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
   type UiState,
@@ -24,11 +25,19 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     defaultAdvertisedEndpointKey: null,
+    publicPairingBaseUrl: null,
     ...overrides,
   };
 }
 
 describe("uiStateStore pure functions", () => {
+  it("stores and clears a public pairing URL", () => {
+    const initialState = makeUiState();
+    const saved = setPublicPairingBaseUrl(initialState, "  https://t3.example.com  ");
+    expect(saved.publicPairingBaseUrl).toBe("https://t3.example.com");
+    expect(setPublicPairingBaseUrl(saved, "").publicPairingBaseUrl).toBeNull();
+  });
+
   it("stores server timestamps without moving visit state backwards", () => {
     const threadId = ThreadId.make("thread-1");
     const initialState = makeUiState();
@@ -159,6 +168,7 @@ describe("parsePersistedState", () => {
         invalid: "not-a-date",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      publicPairingBaseUrl: null,
       threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
@@ -177,6 +187,7 @@ describe("parsePersistedState", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      publicPairingBaseUrl: null,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
           "turn-1": false,
@@ -296,6 +307,7 @@ describe("uiStateStore persistence", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      publicPairingBaseUrl: null,
       threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {

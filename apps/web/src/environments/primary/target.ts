@@ -239,6 +239,46 @@ function resolveWindowOriginPrimaryTarget(): PrimaryEnvironmentTarget {
   };
 }
 
+function resolveRemoteWindowOriginForLoopbackConfiguredTarget(
+  configuredTarget: PrimaryEnvironmentTarget | null,
+): PrimaryEnvironmentTarget | null {
+  if (!configuredTarget || configuredTarget.source !== "configured") {
+    return configuredTarget;
+  }
+
+  const currentUrl = parseTargetUrl({
+    rawValue: window.location.href,
+    source: "window-origin",
+    urlKind: "window-location-url",
+  });
+  const configuredHttpUrl = parseTargetUrl({
+    rawValue: configuredTarget.target.httpBaseUrl,
+    source: "configured",
+    urlKind: "http-base-url",
+  });
+  const configuredWsUrl = parseTargetUrl({
+    rawValue: configuredTarget.target.wsBaseUrl,
+    source: "configured",
+    urlKind: "websocket-base-url",
+  });
+
+  const currentIsRemote = !isLoopbackHostname(currentUrl.hostname);
+  const configuredIsLoopback =
+    isLoopbackHostname(configuredHttpUrl.hostname) && isLoopbackHostname(configuredWsUrl.hostname);
+
+  if (!currentIsRemote || !configuredIsLoopback) {
+    return configuredTarget;
+  }
+
+  // A dev/desktop web bundle can have a loopback backend baked into
+  // VITE_HTTP_URL/VITE_WS_URL. When that same app is served through a reverse
+  // proxy or tunnel (for example Cloudflare Tunnel), the browser must use the
+  // public page origin rather than attempting to connect to its own loopback
+  // interface. Using the window origin also upgrades websocket traffic to WSS
+  // when the public page is HTTPS.
+  return resolveWindowOriginPrimaryTarget();
+}
+
 function resolveDesktopPrimaryTarget(): PrimaryEnvironmentTarget | null {
   const desktopBootstrap = getDesktopLocalEnvironmentBootstrap();
   if (!desktopBootstrap) {
@@ -290,9 +330,13 @@ export function resolvePrimaryEnvironmentHttpUrl(
 }
 
 export function readPrimaryEnvironmentTarget(): PrimaryEnvironmentTarget {
+  const desktopTarget = resolveDesktopPrimaryTarget();
+  if (desktopTarget) {
+    return desktopTarget;
+  }
+
   return (
-    resolveDesktopPrimaryTarget() ??
-    resolveConfiguredPrimaryTarget() ??
+    resolveRemoteWindowOriginForLoopbackConfiguredTarget(resolveConfiguredPrimaryTarget()) ??
     resolveWindowOriginPrimaryTarget()
   );
 }

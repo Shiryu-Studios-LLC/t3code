@@ -18,6 +18,7 @@ import {
   parseThreadSegmentFromAttachmentId,
   PENDING_ATTACHMENT_THREAD_SEGMENT,
   resolveAttachmentPathById,
+  safeAttachmentFileExtension,
   sweepStalePendingAttachments,
 } from "../attachmentStore.ts";
 import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
@@ -41,6 +42,7 @@ const lastPendingSweepByDirectory = new Map<string, number>();
 const AttachmentUploadClaims = Schema.Struct({
   version: Schema.Literal(1),
   kind: Schema.Literal("attachment-upload"),
+  type: Schema.Literals(["image", "file"]),
   attachmentId: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,
@@ -91,10 +93,12 @@ export const issueAttachmentUploadUrl = Effect.fn("AttachmentUpload.issueUrl")(f
 
   const attachmentId = createPendingAttachmentId();
   const expiresAt = nowMs + ATTACHMENT_UPLOAD_URL_TTL_MS;
+  const attachmentType = "type" in input ? input.type : "image";
   const encodedPayload = base64UrlEncode(
     encodeAttachmentUploadClaims({
       version: 1,
       kind: "attachment-upload",
+      type: attachmentType,
       attachmentId,
       name: input.name,
       mimeType: input.mimeType,
@@ -152,7 +156,10 @@ export const storeAttachmentUpload = Effect.fn("AttachmentUpload.store")(functio
   }
 
   const config = yield* ServerConfig.ServerConfig;
-  const extension = inferImageExtension({ mimeType: claims.mimeType, fileName: claims.name });
+  const extension =
+    claims.type === "image"
+      ? inferImageExtension({ mimeType: claims.mimeType, fileName: claims.name })
+      : safeAttachmentFileExtension(claims.name);
   const relativePath = `${claims.attachmentId}${extension}`;
   const finalPath = resolveAttachmentRelativePath({
     attachmentsDir: config.attachmentsDir,

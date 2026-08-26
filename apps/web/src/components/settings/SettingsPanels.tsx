@@ -4,6 +4,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  type AgentTeamMode,
   type BackgroundActivityProfile,
   type DesktopUpdateChannel,
   ProviderDriverKind,
@@ -17,23 +18,31 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  DEFAULT_AGENT_TEAM_MAX_CONCURRENCY,
+  DEFAULT_AGENT_TEAM_MODE,
   DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE,
+  DEFAULT_TEXT_TO_SPEECH_PROVIDER,
+  DEFAULT_TEXT_TO_SPEECH_RATE,
   DEFAULT_UNIFIED_SETTINGS,
   type EnvironmentIdentificationMode,
   MAX_APPEARANCE_CONTRAST,
+  MAX_AGENT_TEAM_MAX_CONCURRENCY,
   MAX_CODE_FONT_SIZE,
   MAX_GLASS_OPACITY,
   MAX_INTERFACE_FONT_SIZE,
   MAX_PROMPT_FONT_SIZE,
   MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MAX_TERMINAL_FONT_SIZE,
+  MAX_TEXT_TO_SPEECH_RATE,
   MIN_CODE_FONT_SIZE,
+  MIN_AGENT_TEAM_MAX_CONCURRENCY,
   MIN_APPEARANCE_CONTRAST,
   MIN_GLASS_OPACITY,
   MIN_INTERFACE_FONT_SIZE,
   MIN_PROMPT_FONT_SIZE,
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   MIN_TERMINAL_FONT_SIZE,
+  MIN_TEXT_TO_SPEECH_RATE,
 } from "@t3tools/contracts/settings";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -165,6 +174,12 @@ const BACKGROUND_ACTIVITY_PROFILE_LABELS: Record<BackgroundActivityProfile, stri
   "battery-saver": "Battery saver",
 };
 
+const AGENT_TEAM_MODE_LABELS: Record<AgentTeamMode, string> = {
+  off: "Off",
+  auto: "Auto",
+  always: "Always",
+};
+
 type BackgroundActivityProfileOption = BackgroundActivityProfile | "advanced";
 
 const BACKGROUND_ACTIVITY_PROFILE_OPTION_LABELS: Record<BackgroundActivityProfileOption, string> = {
@@ -178,6 +193,27 @@ const BACKGROUND_ACTIVITY_PROFILE_DESCRIPTIONS: Record<BackgroundActivityProfile
   performance: "Allows scoped background probes while any subscribed client remains connected.",
   "battery-saver": "Also pauses background probes when the host or client is on battery.",
 };
+
+const TEXT_TO_SPEECH_PROVIDER_LABELS = {
+  system: "System voice",
+  openai: "OpenAI",
+} as const;
+
+const OPENAI_TEXT_TO_SPEECH_VOICES = [
+  "alloy",
+  "ash",
+  "ballad",
+  "cedar",
+  "coral",
+  "echo",
+  "fable",
+  "marin",
+  "nova",
+  "onyx",
+  "sage",
+  "shimmer",
+  "verse",
+] as const;
 
 const ADVANCED_BACKGROUND_ACTIVITY_DESCRIPTION =
   "Uses custom background intervals with the selected shared power policy.";
@@ -1857,6 +1893,7 @@ export function GeneralSettingsPanel() {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const [backgroundActivityDialogOpen, setBackgroundActivityDialogOpen] = useState(false);
+  const [systemSpeechVoices, setSystemSpeechVoices] = useState<ReadonlyArray<string>>([]);
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
   );
@@ -1905,6 +1942,26 @@ export function GeneralSettingsPanel() {
     settings.backgroundActivity,
     DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+
+    const refreshSystemSpeechVoices = () => {
+      setSystemSpeechVoices(
+        window.speechSynthesis
+          .getVoices()
+          .map((voice) => voice.name)
+          .filter((voiceName, index, voices) => voices.indexOf(voiceName) === index)
+          .toSorted((left, right) => left.localeCompare(right)),
+      );
+    };
+
+    refreshSystemSpeechVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", refreshSystemSpeechVoices);
+    return () => {
+      window.speechSynthesis.removeEventListener("voiceschanged", refreshSystemSpeechVoices);
+    };
+  }, []);
 
   return (
     <SettingsPageContainer>
@@ -2468,6 +2525,311 @@ export function GeneralSettingsPanel() {
                 }}
               />
             </div>
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("agent-team-mode")}
+          description="Let capable providers split one chat task across native child agents and consolidate the results back into this conversation. OpenCode is supported first."
+          resetAction={
+            settings.agentTeamMode !== DEFAULT_AGENT_TEAM_MODE ? (
+              <SettingResetButton
+                label="agent team mode"
+                onClick={() => updateSettings({ agentTeamMode: DEFAULT_AGENT_TEAM_MODE })}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.agentTeamMode}
+              onValueChange={(value) => {
+                if (value === "off" || value === "auto" || value === "always") {
+                  updateSettings({ agentTeamMode: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Agent team mode">
+                <SelectValue>{AGENT_TEAM_MODE_LABELS[settings.agentTeamMode]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="off">
+                  {AGENT_TEAM_MODE_LABELS.off}
+                </SelectItem>
+                <SelectItem hideIndicator value="auto">
+                  {AGENT_TEAM_MODE_LABELS.auto}
+                </SelectItem>
+                <SelectItem hideIndicator value="always">
+                  {AGENT_TEAM_MODE_LABELS.always}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        {settings.agentTeamMode !== "off" ? (
+          <SettingsRow
+            {...searchableSetting("agent-team-concurrency")}
+            description="Maximum number of child agents the lead may run at the same time."
+            resetAction={
+              settings.agentTeamMaxConcurrency !== DEFAULT_AGENT_TEAM_MAX_CONCURRENCY ? (
+                <SettingResetButton
+                  label="agent team concurrency"
+                  onClick={() =>
+                    updateSettings({
+                      agentTeamMaxConcurrency: DEFAULT_AGENT_TEAM_MAX_CONCURRENCY,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <div className="flex w-full items-center gap-3 sm:w-52">
+                <output
+                  className="min-w-10 rounded-md bg-muted px-2 py-1 text-center font-mono text-xs font-medium tabular-nums text-foreground"
+                  htmlFor="agent-team-concurrency"
+                >
+                  {settings.agentTeamMaxConcurrency}
+                </output>
+                <input
+                  aria-label="Agent team maximum concurrency"
+                  className="settings-slider min-w-0 flex-1"
+                  id="agent-team-concurrency"
+                  min={MIN_AGENT_TEAM_MAX_CONCURRENCY}
+                  max={MAX_AGENT_TEAM_MAX_CONCURRENCY}
+                  step={1}
+                  type="range"
+                  value={settings.agentTeamMaxConcurrency}
+                  onChange={(event) => {
+                    const agentTeamMaxConcurrency = Number(event.currentTarget.value);
+                    if (
+                      Number.isInteger(agentTeamMaxConcurrency) &&
+                      agentTeamMaxConcurrency >= MIN_AGENT_TEAM_MAX_CONCURRENCY &&
+                      agentTeamMaxConcurrency <= MAX_AGENT_TEAM_MAX_CONCURRENCY
+                    ) {
+                      updateSettings({ agentTeamMaxConcurrency });
+                    }
+                  }}
+                />
+              </div>
+            }
+          />
+        ) : null}
+      </SettingsSection>
+
+      <SettingsSection title="Text to Speech">
+        <SettingsRow
+          {...searchableSetting("text-to-speech")}
+          description="Read completed assistant responses aloud on this device."
+          resetAction={
+            settings.textToSpeechEnabled !== DEFAULT_UNIFIED_SETTINGS.textToSpeechEnabled ? (
+              <SettingResetButton
+                label="text to speech"
+                onClick={() =>
+                  updateSettings({
+                    textToSpeechEnabled: DEFAULT_UNIFIED_SETTINGS.textToSpeechEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.textToSpeechEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ textToSpeechEnabled: Boolean(checked) })
+              }
+              aria-label="Enable text to speech"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("text-to-speech-auto-read")}
+          description="Automatically start speaking after a streamed assistant response becomes final."
+          resetAction={
+            settings.textToSpeechAutoRead !== DEFAULT_UNIFIED_SETTINGS.textToSpeechAutoRead ? (
+              <SettingResetButton
+                label="automatic text to speech"
+                onClick={() =>
+                  updateSettings({
+                    textToSpeechAutoRead: DEFAULT_UNIFIED_SETTINGS.textToSpeechAutoRead,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.textToSpeechAutoRead}
+              disabled={!settings.textToSpeechEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ textToSpeechAutoRead: Boolean(checked) })
+              }
+              aria-label="Automatically read assistant responses"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("text-to-speech-provider")}
+          description={
+            settings.textToSpeechProvider === "openai"
+              ? "Generate natural speech with OpenAI using the API key configured on the T3 host."
+              : "Use a voice installed on this device without sending response text to a cloud speech service."
+          }
+          resetAction={
+            settings.textToSpeechProvider !== DEFAULT_TEXT_TO_SPEECH_PROVIDER ? (
+              <SettingResetButton
+                label="speech provider"
+                onClick={() =>
+                  updateSettings({
+                    textToSpeechProvider: DEFAULT_TEXT_TO_SPEECH_PROVIDER,
+                    textToSpeechVoice: "",
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.textToSpeechProvider}
+              onValueChange={(value) => {
+                if (value === "system" || value === "openai") {
+                  updateSettings({
+                    textToSpeechProvider: value,
+                    textToSpeechVoice: value === "openai" ? "alloy" : "",
+                  });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-44" aria-label="Text to speech provider">
+                <SelectValue>
+                  {TEXT_TO_SPEECH_PROVIDER_LABELS[settings.textToSpeechProvider]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="system">
+                  {TEXT_TO_SPEECH_PROVIDER_LABELS.system}
+                </SelectItem>
+                <SelectItem hideIndicator value="openai">
+                  {TEXT_TO_SPEECH_PROVIDER_LABELS.openai}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("text-to-speech-voice")}
+          description="One global voice is used for both automatic and manual playback."
+          resetAction={
+            settings.textToSpeechVoice !== DEFAULT_UNIFIED_SETTINGS.textToSpeechVoice ? (
+              <SettingResetButton
+                label="speech voice"
+                onClick={() =>
+                  updateSettings({ textToSpeechVoice: DEFAULT_UNIFIED_SETTINGS.textToSpeechVoice })
+                }
+              />
+            ) : null
+          }
+          control={
+            settings.textToSpeechProvider === "openai" ? (
+              <Select
+                value={
+                  OPENAI_TEXT_TO_SPEECH_VOICES.includes(
+                    settings.textToSpeechVoice as (typeof OPENAI_TEXT_TO_SPEECH_VOICES)[number],
+                  )
+                    ? settings.textToSpeechVoice
+                    : "alloy"
+                }
+                onValueChange={(value) => {
+                  if (value) updateSettings({ textToSpeechVoice: value });
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-44" aria-label="Text to speech voice">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {OPENAI_TEXT_TO_SPEECH_VOICES.map((voice) => (
+                    <SelectItem key={voice} hideIndicator value={voice}>
+                      {voice[0]?.toUpperCase()}
+                      {voice.slice(1)}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            ) : systemSpeechVoices.length > 0 ? (
+              <Select
+                value={
+                  systemSpeechVoices.includes(settings.textToSpeechVoice)
+                    ? settings.textToSpeechVoice
+                    : "__system_default__"
+                }
+                onValueChange={(value) =>
+                  value !== null
+                    ? updateSettings({
+                        textToSpeechVoice: value === "__system_default__" ? "" : value,
+                      })
+                    : undefined
+                }
+              >
+                <SelectTrigger className="w-full sm:w-64" aria-label="Text to speech voice">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem hideIndicator value="__system_default__">
+                    System default
+                  </SelectItem>
+                  {systemSpeechVoices.map((voice) => (
+                    <SelectItem key={voice} hideIndicator value={voice}>
+                      {voice}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            ) : (
+              <DraftInput
+                className="w-full sm:w-64"
+                value={settings.textToSpeechVoice}
+                onCommit={(value) => updateSettings({ textToSpeechVoice: value })}
+                placeholder="System default"
+                aria-label="Text to speech voice"
+              />
+            )
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("text-to-speech-rate")}
+          description="Adjust playback speed without changing the selected voice."
+          resetAction={
+            settings.textToSpeechRate !== DEFAULT_TEXT_TO_SPEECH_RATE ? (
+              <SettingResetButton
+                label="speech rate"
+                onClick={() => updateSettings({ textToSpeechRate: DEFAULT_TEXT_TO_SPEECH_RATE })}
+              />
+            ) : null
+          }
+          control={
+            <Input
+              className="w-full sm:w-24"
+              type="number"
+              min={MIN_TEXT_TO_SPEECH_RATE}
+              max={MAX_TEXT_TO_SPEECH_RATE}
+              step={0.05}
+              value={settings.textToSpeechRate}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (
+                  Number.isFinite(value) &&
+                  value >= MIN_TEXT_TO_SPEECH_RATE &&
+                  value <= MAX_TEXT_TO_SPEECH_RATE
+                ) {
+                  updateSettings({ textToSpeechRate: value });
+                }
+              }}
+              aria-label="Text to speech rate"
+            />
           }
         />
       </SettingsSection>

@@ -28,7 +28,12 @@ interface PendingRpcAckRequest {
 }
 
 const pendingRpcAckRequests = new Map<string, PendingRpcAckRequest>();
-const untrackedRpcAckMethods = new Set<string>([WS_METHODS.previewAutomationConnect]);
+const untrackedRpcAckMethods = new Set<string>([
+  WS_METHODS.previewAutomationConnect,
+  // This is an automatic, best-effort background scan. It has its own server
+  // time budget and should never surface internal RPC diagnostics over the UI.
+  WS_METHODS.vcsDiscoverRepositories,
+]);
 const longRunningRpcAckMethods = new Set<string>([
   WS_METHODS.serverUpdateProvider,
   WS_METHODS.serverRefreshProviders,

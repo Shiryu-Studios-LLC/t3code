@@ -14,7 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { extractJsonObject } from "@t3tools/shared/schemaJson";
+import { extractJsonObject, fromLenientJson } from "@t3tools/shared/schemaJson";
 
 import * as ServerConfig from "../config.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
@@ -365,6 +365,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     readonly outputSchemaJson: S;
     readonly modelSelection: ModelSelection;
     readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+    readonly recoverInvalidOutput?: ((rawOutput: string) => unknown) | undefined;
   }) {
     const parsedModel = OpenCodeRuntime.parseOpenCodeModelSlug(input.modelSelection.model);
     if (!parsedModel) {
@@ -508,20 +509,96 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
             releaseSharedServer,
           );
 
-    const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(input.outputSchemaJson));
+    // Model-backed structured output is frequently JSON-shaped rather than
+    // byte-for-byte strict JSON (for example a trailing comma or a harmless
+    // JS-style comment). We still validate the resulting value against the
+    // exact requested schema, but use the shared lenient JSON decoder for the
+    // textual envelope so otherwise-valid model output is not rejected.
+    const decodeOutput = Schema.decodeEffect(fromLenientJson(input.outputSchemaJson));
     return yield* decodeOutput(extractJsonObject(rawOutput)).pipe(
-      Effect.catchTags({
-        SchemaError: (cause) =>
-          Effect.fail(
+      Effect.catchTag("SchemaError", (primaryCause) => {
+        const recovered = input.recoverInvalidOutput?.(rawOutput);
+        if (recovered === undefined) {
+          return Effect.fail(
             new TextGenerationError({
               operation: input.operation,
               detail: "OpenCode returned invalid structured output.",
-              cause,
+              cause: primaryCause,
             }),
+          );
+        }
+
+        return Schema.decodeUnknownEffect(input.outputSchemaJson)(recovered).pipe(
+          Effect.catchTag("SchemaError", () =>
+            Effect.fail(
+              new TextGenerationError({
+                operation: input.operation,
+                detail: "OpenCode returned invalid structured output.",
+                cause: primaryCause,
+              }),
+            ),
           ),
+        );
       }),
     );
   });
+
+  const recoverCommitMessage = (rawOutput: string, includeBranch: boolean) => {
+    const cleaned = rawOutput
+      .trim()
+      .replace(/^```(?:json|javascript|js|text)?\s*/iu, "")
+      .replace(/\s*```$/u, "")
+      .trim();
+    if (cleaned.length === 0) {
+      return undefined;
+    }
+
+    const quotedOrBareField = (name: string) => {
+      const pattern = new RegExp(
+        `(?:^|[\\n,{])\\s*["']?${name}["']?\\s*[:=]\\s*(?:["']([^"'\\n}]*)["']|([^,\\n}]+))`,
+        "iu",
+      );
+      const match = pattern.exec(cleaned);
+      return (match?.[1] ?? match?.[2] ?? "").trim();
+    };
+
+    const labeledSubject = quotedOrBareField("subject");
+    const labeledBody = quotedOrBareField("body");
+    const labeledBranch = quotedOrBareField("branch");
+
+    let subject = labeledSubject;
+    let body = labeledBody;
+    if (subject.length === 0) {
+      const lines = cleaned
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !/^```/u.test(line));
+      const first = lines.shift() ?? "";
+      subject = first
+        .replace(/^[-*#>\s]+/u, "")
+        .replace(/^(?:commit(?: message)?|subject)\s*[:=-]\s*/iu, "")
+        .trim();
+      body = body || lines.join("\n").trim();
+    }
+
+    const safeSubject = sanitizeCommitSubject(subject);
+    if (safeSubject.length === 0) {
+      return undefined;
+    }
+
+    return {
+      subject: safeSubject,
+      body,
+      ...(includeBranch
+        ? {
+            branch:
+              labeledBranch.length > 0
+                ? sanitizeFeatureBranchName(labeledBranch)
+                : sanitizeFeatureBranchName(safeSubject),
+          }
+        : {}),
+    };
+  };
 
   const generateCommitMessage: TextGeneration.TextGeneration["Service"]["generateCommitMessage"] =
     Effect.fn("OpenCodeTextGeneration.generateCommitMessage")(function* (input) {
@@ -538,6 +615,8 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         prompt,
         outputSchemaJson: outputSchema,
         modelSelection: input.modelSelection,
+        recoverInvalidOutput: (rawOutput) =>
+          recoverCommitMessage(rawOutput, input.includeBranch === true),
       });
 
       return {

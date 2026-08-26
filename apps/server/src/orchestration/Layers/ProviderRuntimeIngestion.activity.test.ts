@@ -1,6 +1,7 @@
 import {
   EventId,
   ProviderDriverKind,
+  RuntimeItemId,
   RuntimeTaskId,
   ThreadId,
   type ProviderRuntimeEvent,
@@ -80,6 +81,102 @@ describe("runtimeEventToActivities task progress", () => {
     expect(usagePayload.typedUsage).toEqual({ totalTokens: 4_200, toolUses: 7 });
     expect(usagePayload.usageSnapshot).toBe(true);
     expect(usagePayload).not.toHaveProperty("status");
+  });
+});
+
+describe("runtimeEventToActivities OpenCode agent overview bridge", () => {
+  it("projects collaborative task tools into named task lifecycle activities", () => {
+    const event = {
+      ...base,
+      type: "item.started",
+      eventId: EventId.make("evt-opencode-agent"),
+      itemId: RuntimeItemId.make("call-mobile-tts"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        title: "task",
+        data: {
+          tool: "task",
+          state: {
+            status: "running",
+            input: {
+              subagent_type: "general",
+              prompt: "Implement mobile TTS controls and verify the responsive layout.",
+            },
+          },
+        },
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    const activities = runtimeEventToActivities(event);
+    expect(activities).toHaveLength(2);
+    expect(activities[0]?.kind).toBe("tool.started");
+    expect(activities[1]?.kind).toBe("task.started");
+    const payload = activities[1]?.payload as Record<string, unknown>;
+    expect(payload.taskId).toBe("call-mobile-tts");
+    expect(payload.agentKind).toBe("agent");
+    expect(payload.title).toBe("mobile TTS controls and verify the responsive layout");
+    expect(payload.role).toBe("OpenCode subagent");
+  });
+
+  it("preserves the OpenCode child session id as the agent run handle", () => {
+    const event = {
+      ...base,
+      type: "item.updated",
+      eventId: EventId.make("evt-opencode-child-session"),
+      itemId: RuntimeItemId.make("call-child-session"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "inProgress",
+        title: "Backend validation",
+        data: {
+          tool: "task",
+          state: {
+            status: "running",
+            input: { prompt: "Validate backend behavior" },
+            metadata: { sessionId: "ses_child_123", parentSessionId: "ses_parent" },
+          },
+        },
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    const activities = runtimeEventToActivities(event);
+    const payload = activities.find((activity) => activity.kind === "task.progress")
+      ?.payload as Record<string, unknown>;
+    expect(payload.runHandles).toEqual({ runId: "ses_child_123" });
+  });
+
+  it("does not mark a background OpenCode child complete when only the launch tool settles", () => {
+    const event = {
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("evt-opencode-background-launch-complete"),
+      itemId: RuntimeItemId.make("call-background-child"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        title: "Background worker",
+        detail: "Background task launched",
+        data: {
+          tool: "task",
+          state: {
+            status: "completed",
+            input: { prompt: "Run long validation" },
+            output: "Task launched",
+            metadata: {
+              background: true,
+              sessionId: "ses_background_child",
+              parentSessionId: "ses_parent",
+            },
+          },
+        },
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    const activities = runtimeEventToActivities(event);
+    expect(activities).toHaveLength(1);
+    expect(activities[0]?.kind).toBe("tool.completed");
+    expect(activities.some((activity) => activity.kind === "task.completed")).toBe(false);
   });
 });
 describe("runtimeEventToActivities tool streaming persistence", () => {

@@ -69,6 +69,43 @@ export function shouldPreserveAssistantLineBreaks(text: string): boolean {
   return /^★ Insight(?:\s|─)/mu.test(text);
 }
 
+export interface FriendlyAgentTaskResult {
+  readonly cleanedMarkdown: string;
+  readonly completed: boolean;
+  readonly hadInternalMarkup: boolean;
+}
+
+/**
+ * Native agent providers can return an XML-ish transport envelope such as
+ * `<task ...><task_result>...</task_result></task>`. Those tags are useful to
+ * the runtime but are noisy in the user-facing work log. Strip only the known
+ * task wrappers and preserve the inner markdown verbatim so headings, tables,
+ * lists, and code fences still render normally.
+ */
+export function normalizeFriendlyAgentTaskResult(text: string): FriendlyAgentTaskResult {
+  const source = text.trim();
+  if (!source) {
+    return { cleanedMarkdown: "", completed: false, hadInternalMarkup: false };
+  }
+
+  const hadInternalMarkup = /<\/?task(?:\s|>)|<\/?task_result(?:\s|>)/iu.test(source);
+  const completed = /<task\b[^>]*\bstate\s*=\s*["']?completed["']?[^>]*>/iu.test(source);
+  if (!hadInternalMarkup) {
+    return { cleanedMarkdown: source, completed: false, hadInternalMarkup: false };
+  }
+
+  const cleanedMarkdown = source
+    .replace(/<task\b[^>]*>/giu, "")
+    .replace(/<\/task>/giu, "")
+    .replace(/<task_result\b[^>]*>/giu, "")
+    .replace(/<\/task_result>/giu, "")
+    .replace(/^\s*(?:task_id|task_result)\s*[:=].*$/gimu, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return { cleanedMarkdown, completed, hadInternalMarkup: true };
+}
+
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {
   const naturalHeight = Math.max(1, (itemCount - 1) * TIMELINE_MINIMAP_ITEM_SPACING);
   return `min(${naturalHeight}px, ${TIMELINE_MINIMAP_MAX_HEIGHT_CSS})`;

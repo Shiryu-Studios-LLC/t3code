@@ -21,6 +21,7 @@ import {
   ProviderDriverKind,
   RuntimeMode,
   TerminalOpenInput,
+  type VcsDiscoveredRepository,
 } from "@t3tools/contracts";
 import {
   connectionStatusTitle,
@@ -222,7 +223,9 @@ import { buildDraftThreadRouteParams, buildThreadRouteParams } from "../threadRo
 import {
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
+  type ComposerAttachment,
   type ComposerImageAttachment,
+  isComposerImageAttachment,
   type DraftThreadEnvMode,
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThreadByRef,
@@ -274,6 +277,7 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { formatAgentProgressSummary, isAgentProgressStatusQuery } from "~/agentStatus";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
@@ -384,8 +388,8 @@ import {
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
 
-const IMAGE_ONLY_BOOTSTRAP_PROMPT =
-  "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
+const ATTACHMENT_ONLY_BOOTSTRAP_PROMPT =
+  "[User attached one or more files without additional text. Respond using the conversation context and the attached file(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
@@ -1274,6 +1278,9 @@ function ChatViewContent(props: ChatViewProps) {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const discoverGitRepositories = useAtomCommand(vcsEnvironment.discoverRepositories, {
+    reportFailure: false,
+  });
   const switchGitRef = useAtomCommand(vcsEnvironment.switchRef, { reportFailure: false });
   const setThreadRuntimeMode = useAtomCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
@@ -1391,7 +1398,7 @@ function ChatViewContent(props: ChatViewProps) {
     (store) => store.setLogicalProjectDraftThreadId,
   );
   const promptRef = useRef("");
-  const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
+  const composerImagesRef = useRef<ComposerAttachment[]>([]);
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>([]);
   const composerElementContextsRef = useRef<ElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
@@ -1400,6 +1407,10 @@ function ChatViewContent(props: ChatViewProps) {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+  const [localAgentStatusMessages, setLocalAgentStatusMessages] = useState<ChatMessage[]>([]);
+  useEffect(() => {
+    setLocalAgentStatusMessages([]);
+  }, [routeThreadKey]);
   const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
     Record<string, ReadonlyArray<CodexFeedbackSubmission>>
   >({});
@@ -1684,6 +1695,7 @@ function ChatViewContent(props: ChatViewProps) {
   const activeRightPanelSurface = useRightPanelStore((state) =>
     selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef),
   );
+  const [swarmWorkspaceThreadKey, setSwarmWorkspaceThreadKey] = useState<string | null>(null);
   const [pullRequestTabStatuses, setPullRequestTabStatuses] = useState<
     Record<string, PullRequestTabStatus>
   >({});
@@ -1728,10 +1740,16 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const previewPanelOpen = activeRightPanelKind === "preview" && isPreviewSupportedInRuntime();
   const rightPanelOpen = rightPanelState.isOpen;
-  const canMaximizeRightPanel = rightPanelOpen && !shouldUseRightPanelSheet;
+  const legacySwarmSurfaceOpen = activeRightPanelSurface?.kind === "agents";
+  const isSwarmWorkspace = swarmWorkspaceThreadKey === routeThreadKey || legacySwarmSurfaceOpen;
+  // Swarm is a primary workspace mode, not a side-panel surface. Keep the
+  // ordinary right panel independent so Browser/Terminal/Diff/Files remain
+  // available while the swarm workspace is visible.
+  const inlineRightPanelOpen = rightPanelOpen && !legacySwarmSurfaceOpen;
+  const canMaximizeRightPanel = inlineRightPanelOpen && !shouldUseRightPanelSheet;
   const rightPanelMaximized =
     canMaximizeRightPanel && maximizedRightPanelThreadKey === routeThreadKey;
-  const inlineRightPanelOwnsTitleBar = rightPanelOpen && !shouldUseRightPanelSheet;
+  const inlineRightPanelOwnsTitleBar = inlineRightPanelOpen && !shouldUseRightPanelSheet;
 
   useEffect(() => {
     if (!activeThreadRef) return;
@@ -1739,6 +1757,12 @@ function ChatViewContent(props: ChatViewProps) {
       .getState()
       .reconcileBrowserSurfaces(activeThreadRef, Object.keys(activePreviewState.sessions));
   }, [activePreviewState.sessions, activeThreadRef]);
+
+  useEffect(() => {
+    if (!activeThreadRef || !legacySwarmSurfaceOpen) return;
+    setSwarmWorkspaceThreadKey(routeThreadKey);
+    useRightPanelStore.getState().closeSurface(activeThreadRef, "agents");
+  }, [activeThreadRef, legacySwarmSurfaceOpen, routeThreadKey]);
 
   useEffect(() => {
     if (!activeThreadRef || !activePreviewMiniPlayer) return;
@@ -2473,7 +2497,9 @@ function ChatViewContent(props: ChatViewProps) {
     const attachmentIds = new Set<string>();
     for (const message of serverMessages ?? []) {
       for (const attachment of message.attachments ?? []) {
-        attachmentIds.add(attachment.id);
+        if (attachment.type === "image") {
+          attachmentIds.add(attachment.id);
+        }
       }
     }
     return [...attachmentIds];
@@ -2506,6 +2532,9 @@ function ChatViewContent(props: ChatViewProps) {
       return {
         ...message,
         attachments: message.attachments.map((attachment) => {
+          if (attachment.type !== "image") {
+            return attachment;
+          }
           const previewUrl = serverAttachmentUrlById.get(attachment.id);
           return previewUrl ? { ...attachment, previewUrl } : attachment;
         }),
@@ -2640,6 +2669,7 @@ function ChatViewContent(props: ChatViewProps) {
 
     const localMessages = [
       ...optimisticUserMessages,
+      ...localAgentStatusMessages,
       ...feedbackSubmissions.flatMap((submission) =>
         submission.status === "interrupted"
           ? []
@@ -2660,6 +2690,7 @@ function ChatViewContent(props: ChatViewProps) {
     displayServerMessages,
     feedbackSubmissions,
     optimisticUserMessages,
+    localAgentStatusMessages,
   ]);
   const timelineEntries = useMemo(
     () =>
@@ -2735,7 +2766,79 @@ function ChatViewContent(props: ChatViewProps) {
         worktreePath: activeThread?.worktreePath ?? null,
       })
     : null;
-  const gitStatusCwd = activeThread?.worktreePath ?? gitCwd;
+  const [gitRepositories, setGitRepositories] = useState<ReadonlyArray<VcsDiscoveredRepository>>(
+    [],
+  );
+  const [selectedGitRepositoryCwd, setSelectedGitRepositoryCwd] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeProject) {
+      setGitRepositories([]);
+      setSelectedGitRepositoryCwd(null);
+      return;
+    }
+
+    let cancelled = false;
+    const projectId = activeProject.id;
+    const workspaceRoot = activeProject.workspaceRoot;
+    const selectionStorageKey = `t3:selected-git-repository:${environmentId}:${projectId}`;
+
+    void (async () => {
+      const result = await discoverGitRepositories({
+        environmentId,
+        input: { cwd: workspaceRoot },
+      });
+      if (cancelled) return;
+      if (result._tag === "Failure") {
+        setGitRepositories([]);
+        setSelectedGitRepositoryCwd(null);
+        return;
+      }
+
+      const repositories = result.value.repositories;
+      setGitRepositories(repositories);
+      if (repositories.length === 0) {
+        setSelectedGitRepositoryCwd(null);
+        return;
+      }
+
+      let storedSelection: string | null = null;
+      try {
+        storedSelection = window.localStorage.getItem(selectionStorageKey);
+      } catch {
+        storedSelection = null;
+      }
+      const selectedRepository =
+        repositories.find((repository) => repository.rootPath === storedSelection) ??
+        repositories[0] ??
+        null;
+      setSelectedGitRepositoryCwd(selectedRepository?.rootPath ?? null);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProject, discoverGitRepositories, environmentId]);
+
+  const selectGitRepository = useCallback(
+    (cwd: string) => {
+      setSelectedGitRepositoryCwd(cwd);
+      if (!activeProject) return;
+      try {
+        window.localStorage.setItem(
+          `t3:selected-git-repository:${environmentId}:${activeProject.id}`,
+          cwd,
+        );
+      } catch {
+        // Browser storage is optional. The in-memory selection still works.
+      }
+    },
+    [activeProject, environmentId],
+  );
+
+  const sourceControlCwd =
+    activeThread?.worktreePath ?? selectedGitRepositoryCwd ?? activeProject?.workspaceRoot ?? null;
+  const gitStatusCwd = sourceControlCwd;
   const gitStatusQuery = useEnvironmentQuery(
     gitStatusCwd === null
       ? null
@@ -3399,8 +3502,8 @@ function ChatViewContent(props: ChatViewProps) {
   }, [activeProject, activeThreadRef]);
   const addAgentsSurface = useCallback(() => {
     if (!activeThreadRef) return;
-    useRightPanelStore.getState().open(activeThreadRef, "agents");
-  }, [activeThreadRef]);
+    setSwarmWorkspaceThreadKey((current) => (current === routeThreadKey ? null : routeThreadKey));
+  }, [activeThreadRef, routeThreadKey]);
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
@@ -4588,6 +4691,9 @@ function ChatViewContent(props: ChatViewProps) {
   // interrupting, and works by session, so no active turn is needed.
   const activeBackgroundLiveness =
     !isWorking && activeThread ? (activeThreadShell?.backgroundLiveness ?? null) : null;
+  const swarmLeadBusy =
+    isSwarmWorkspace &&
+    (isWorking || activeBackgroundLiveness !== null || agentPanelModel.liveCount > 0);
   const [isStoppingBackgroundWork, setIsStoppingBackgroundWork] = useState(false);
   useEffect(() => {
     // "Stopping..." holds until the liveness clears; the interrupt command
@@ -4623,7 +4729,7 @@ function ChatViewContent(props: ChatViewProps) {
     }
   }, [activeThread, environmentId, interruptThreadTurn, setThreadError]);
   const backgroundLivenessBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
-    if (activeBackgroundLiveness === null || !activeThread) {
+    if (isSwarmWorkspace || activeBackgroundLiveness === null || !activeThread) {
       return null;
     }
     const working = activeBackgroundLiveness === "working";
@@ -4659,6 +4765,7 @@ function ChatViewContent(props: ChatViewProps) {
     agentPanelModel.liveCount,
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
+    isSwarmWorkspace,
   ]);
   // A woken thread announces itself in the open view, not just the sidebar
   // pill. Dismissing marks the wake as seen (same acknowledgment as the
@@ -5118,6 +5225,37 @@ function ChatViewContent(props: ChatViewProps) {
     },
   ) => {
     e?.preventDefault();
+    const localStatusPrompt = promptRef.current.trim();
+    if (
+      activeThread &&
+      agentPanelModel.hasAgents &&
+      isAgentProgressStatusQuery(localStatusPrompt)
+    ) {
+      const createdAt = new Date().toISOString();
+      const userMessage: ChatMessage = {
+        id: newMessageId(),
+        role: "user",
+        turnId: null,
+        text: localStatusPrompt,
+        streaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      };
+      const assistantMessage: ChatMessage = {
+        id: newMessageId(),
+        role: "assistant",
+        turnId: null,
+        text: formatAgentProgressSummary(agentPanelModel),
+        streaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      };
+      setLocalAgentStatusMessages((existing) => [...existing, userMessage, assistantMessage]);
+      promptRef.current = "";
+      setComposerDraftPrompt(composerDraftTarget, "");
+      composerRef.current?.resetCursorState({ cursor: 0, prompt: "", detectTrigger: false });
+      return;
+    }
     const notifyDirectAnnotationAttached = () => {
       if (!directAnnotation) return;
       toastManager.add(
@@ -5410,13 +5548,24 @@ function ChatViewContent(props: ChatViewProps) {
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT,
+      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       return;
     }
 
     sendInFlightRef.current = true;
+    if (
+      !supportsAttachmentUploads &&
+      composerImagesSnapshot.some((attachment) => attachment.type === "file")
+    ) {
+      sendInFlightRef.current = false;
+      setThreadError(
+        threadIdForSend,
+        "Direct file attachments require a newer T3 server with attachment uploads enabled.",
+      );
+      return;
+    }
     if (supportsAttachmentUploads && composerImagesSnapshot.length > 0) {
       for (const image of composerImagesSnapshot) {
         startAttachmentUpload({ environmentId, image });
@@ -5469,23 +5618,36 @@ function ChatViewContent(props: ChatViewProps) {
           }
           return uploaded;
         }
-        return {
-          type: "image" as const,
-          name: image.name,
-          mimeType: image.mimeType,
-          sizeBytes: image.sizeBytes,
-          dataUrl: await readFileAsDataUrl(image.file),
-        };
+        if (isComposerImageAttachment(image)) {
+          return {
+            type: "image" as const,
+            name: image.name,
+            mimeType: image.mimeType,
+            sizeBytes: image.sizeBytes,
+            dataUrl: await readFileAsDataUrl(image.file),
+          };
+        }
+        throw new Error(`File '${image.name}' requires attachment upload support.`);
       }),
     );
-    const optimisticAttachments = composerImagesSnapshot.map((image) => ({
-      type: "image" as const,
-      id: image.id,
-      name: image.name,
-      mimeType: image.mimeType,
-      sizeBytes: image.sizeBytes,
-      previewUrl: image.previewUrl,
-    }));
+    const optimisticAttachments = composerImagesSnapshot.map((image) =>
+      isComposerImageAttachment(image)
+        ? {
+            type: "image" as const,
+            id: image.id,
+            name: image.name,
+            mimeType: image.mimeType,
+            sizeBytes: image.sizeBytes,
+            previewUrl: image.previewUrl,
+          }
+        : {
+            type: "file" as const,
+            id: image.id,
+            name: image.name,
+            mimeType: image.mimeType,
+            sizeBytes: image.sizeBytes,
+          },
+    );
     const shouldAnchorFirstMessage =
       activeThread.latestTurn === null &&
       !timelineMessages.some((message) => message.role === "user");
@@ -5620,7 +5782,7 @@ function ChatViewContent(props: ChatViewProps) {
               ...(baseBranchForWorktree
                 ? {
                     prepareWorktree: {
-                      projectCwd: activeProject.workspaceRoot,
+                      projectCwd: sourceControlCwd ?? activeProject.workspaceRoot,
                       baseBranch: baseBranchForWorktree,
                       branch: buildTemporaryWorktreeBranchName(randomHex),
                       ...(startFromOrigin ? { startFromOrigin: true } : {}),
@@ -6452,7 +6614,7 @@ function ChatViewContent(props: ChatViewProps) {
       terminalOpen={terminalUiState.terminalOpen}
       terminalShortcutLabel={shortcutLabelForCommand(keybindings, "terminal.toggle")}
       rightPanelAvailable={activeProject !== null}
-      rightPanelOpen={rightPanelOpen}
+      rightPanelOpen={inlineRightPanelOpen}
       rightPanelShortcutLabel={shortcutLabelForCommand(keybindings, "rightPanel.toggle")}
       // Suppressed while the Agents surface is visible: the roster itself is
       // on screen, so the toggle badge would be pointing at nothing.
@@ -6473,7 +6635,7 @@ function ChatViewContent(props: ChatViewProps) {
       )}
       data-workspace-titlebar-controls
     >
-      {rightPanelOpen && !shouldUseRightPanelSheet ? (
+      {inlineRightPanelOpen && !shouldUseRightPanelSheet ? (
         <RightPanelMaximizeControl
           maximized={rightPanelMaximized}
           onToggle={toggleRightPanelMaximized}
@@ -6521,6 +6683,7 @@ function ChatViewContent(props: ChatViewProps) {
           mode="embedded"
           composerDraftTarget={composerDraftTarget}
           initialGitScope={initialDiffPanelGitScope}
+          gitCwd={sourceControlCwd}
         />
       </Suspense>
     ) : activeRightPanelSurface?.kind === "pull-request" && !pullRequestsCapabilityKnown ? (
@@ -6563,13 +6726,9 @@ function ChatViewContent(props: ChatViewProps) {
         composerDraftTarget={composerDraftTarget}
         onStateChange={handlePullRequestTabStatusChange}
       />
-    ) : activeRightPanelSurface?.kind === "agents" ? (
-      <AgentsPanel
-        model={agentPanelModel}
-        environmentId={activeThreadRef?.environmentId ?? null}
-        threadId={activeThreadRef?.threadId ?? null}
-      />
-    ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
+    ) : activeRightPanelSurface?.kind === "agents" ? null : (activeRightPanelSurface?.kind ===
+        "files" ||
+        activeRightPanelSurface?.kind === "file") &&
       activeProject &&
       activeWorkspaceRoot ? (
       <Suspense fallback={null}>
@@ -6639,8 +6798,13 @@ function ChatViewContent(props: ChatViewProps) {
             }
             keybindings={keybindings}
             availableEditors={availableEditors}
-            rightPanelOpen={rightPanelOpen}
-            gitCwd={gitCwd}
+            rightPanelOpen={inlineRightPanelOpen}
+            gitCwd={sourceControlCwd}
+            gitRepositories={activeThread?.worktreePath ? [] : gitRepositories}
+            selectedGitRepositoryCwd={selectedGitRepositoryCwd}
+            onSelectGitRepository={selectGitRepository}
+            liveAgentCount={agentPanelModel.liveCount}
+            onOpenAgents={addAgentsSurface}
             onNewThreadInProject={handleNewThreadInActiveProject}
             onRunProjectScript={runProjectScript}
             onAddProjectScript={saveProjectScript}
@@ -6692,40 +6856,54 @@ function ChatViewContent(props: ChatViewProps) {
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
-              <MessagesTimeline
-                agentPanelModel={agentPanelModel}
-                onOpenAgents={addAgentsSurface}
-                key={activeThread.id}
-                isWorking={isWorking}
-                workingStepLabel={workingStepLabel}
-                activeTurnStartedAt={activeWorkStartedAt}
-                listRef={legendListRef}
-                timelineEntries={timelineEntries}
-                latestTurn={activeLatestTurn}
-                runningTurnId={activeRunningTurnId}
-                turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
-                activeThreadEnvironmentId={activeThread.environmentId}
-                routeThreadKey={routeThreadKey}
-                onOpenTurnDiff={onOpenTurnDiff}
-                revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
-                onRevertUserMessage={onRevertUserMessage}
-                isRevertingCheckpoint={isRevertingCheckpoint}
-                onImageExpand={onExpandTimelineImage}
-                markdownCwd={gitCwd ?? undefined}
-                resolvedTheme={resolvedTheme}
-                timestampFormat={timestampFormat}
-                workspaceRoot={activeWorkspaceRoot}
-                skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
-                anchorMessageId={timelineAnchorMessageId}
-                onAnchorReady={onTimelineAnchorReady}
-                contentInsetEndAdjustment={composerOverlayHeight}
-                liveFollowEnabled={timelineLiveFollowEnabled}
-                onIsAtEndChange={onIsAtEndChange}
-                onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
-                hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
-                topFadeEnabled={!hasTimelineTopBanner}
-                loadEarlier={loadEarlierTurns}
-              />
+              {isSwarmWorkspace ? (
+                <div className="min-h-0 flex-1 pb-40">
+                  <AgentsPanel
+                    model={agentPanelModel}
+                    environmentId={activeThreadRef?.environmentId ?? null}
+                    threadId={activeThreadRef?.threadId ?? null}
+                    parentTurnCompleted={activeLatestTurn?.state === "completed"}
+                    orchestratorBusy={swarmLeadBusy}
+                    {...(activeWorkspaceRoot ? { projectCwd: activeWorkspaceRoot } : {})}
+                    onCommand={(command) => composerRef.current?.submitText(command) ?? false}
+                  />
+                </div>
+              ) : (
+                <MessagesTimeline
+                  agentPanelModel={agentPanelModel}
+                  onOpenAgents={addAgentsSurface}
+                  key={activeThread.id}
+                  isWorking={isWorking}
+                  workingStepLabel={workingStepLabel}
+                  activeTurnStartedAt={activeWorkStartedAt}
+                  listRef={legendListRef}
+                  timelineEntries={timelineEntries}
+                  latestTurn={activeLatestTurn}
+                  runningTurnId={activeRunningTurnId}
+                  turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+                  activeThreadEnvironmentId={activeThread.environmentId}
+                  routeThreadKey={routeThreadKey}
+                  onOpenTurnDiff={onOpenTurnDiff}
+                  revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
+                  onRevertUserMessage={onRevertUserMessage}
+                  isRevertingCheckpoint={isRevertingCheckpoint}
+                  onImageExpand={onExpandTimelineImage}
+                  markdownCwd={sourceControlCwd ?? undefined}
+                  resolvedTheme={resolvedTheme}
+                  timestampFormat={timestampFormat}
+                  workspaceRoot={activeWorkspaceRoot}
+                  skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+                  anchorMessageId={timelineAnchorMessageId}
+                  onAnchorReady={onTimelineAnchorReady}
+                  contentInsetEndAdjustment={composerOverlayHeight}
+                  liveFollowEnabled={timelineLiveFollowEnabled}
+                  onIsAtEndChange={onIsAtEndChange}
+                  onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
+                  hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
+                  topFadeEnabled={!hasTimelineTopBanner}
+                  loadEarlier={loadEarlierTurns}
+                />
+              )}
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}
               {showScrollToBottom && (
@@ -6752,7 +6930,7 @@ function ChatViewContent(props: ChatViewProps) {
               ref={setComposerOverlayElement}
               data-chat-composer-overlay="true"
               className={
-                isDraftHeroState
+                isDraftHeroState && !isSwarmWorkspace
                   ? "pointer-events-none absolute inset-0 z-20 flex items-center"
                   : "pointer-events-none absolute inset-x-0 bottom-0 z-20 pt-1.5 sm:pt-2"
               }
@@ -6762,7 +6940,7 @@ function ChatViewContent(props: ChatViewProps) {
                 className="w-full ps-[calc(env(safe-area-inset-left)+0.75rem)] pe-[calc(env(safe-area-inset-right)+0.75rem)] sm:ps-[calc(env(safe-area-inset-left)+1.25rem)] sm:pe-[calc(env(safe-area-inset-right)+1.25rem)]"
               >
                 <div className="pointer-events-auto relative z-10">
-                  {isDraftHeroState ? (
+                  {isDraftHeroState && !isSwarmWorkspace ? (
                     <div className="absolute inset-x-0 bottom-full z-0">
                       <div
                         className="pb-8"
@@ -6818,9 +6996,11 @@ function ChatViewContent(props: ChatViewProps) {
                             activeThread={activeThread}
                             isServerThread={isServerThread}
                             isLocalDraftThread={isLocalDraftThread}
-                            forceExpandedOnMobile={forceExpandedMobileComposer && isDraftHeroState}
+                            forceExpandedOnMobile={
+                              forceExpandedMobileComposer && isDraftHeroState && !isSwarmWorkspace
+                            }
                             projectSelectionRequired={isLocalDraftThread && activeProject === null}
-                            phase={phase}
+                            phase={swarmLeadBusy ? "running" : phase}
                             isConnecting={isConnecting}
                             isSendBusy={isSendBusy}
                             sendDisabledReason={
@@ -6859,7 +7039,7 @@ function ChatViewContent(props: ChatViewProps) {
                             settings={settings}
                             keybindings={keybindings}
                             terminalOpen={Boolean(terminalUiState.terminalOpen)}
-                            gitCwd={gitCwd}
+                            gitCwd={sourceControlCwd}
                             promptRef={promptRef}
                             composerImagesRef={composerImagesRef}
                             composerTerminalContextsRef={composerTerminalContextsRef}
@@ -6982,7 +7162,7 @@ function ChatViewContent(props: ChatViewProps) {
                 open
                 environmentId={activeThread.environmentId}
                 threadId={activeThread.id}
-                cwd={activeProject?.workspaceRoot ?? null}
+                cwd={sourceControlCwd}
                 initialReference={pullRequestDialogState.initialReference}
                 onOpenChange={(open) => {
                   if (!open) {
@@ -7045,7 +7225,7 @@ function ChatViewContent(props: ChatViewProps) {
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
-          agentsAvailable
+          agentsAvailable={false}
           pullRequestStatuses={pullRequestTabStatuses}
           liveAgentCount={agentPanelModel.liveCount}
         >
@@ -7085,7 +7265,7 @@ function ChatViewContent(props: ChatViewProps) {
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
             pullRequestAvailable={pullRequestSurfaceAvailable}
-            agentsAvailable
+            agentsAvailable={false}
             pullRequestStatuses={pullRequestTabStatuses}
             liveAgentCount={agentPanelModel.liveCount}
           >

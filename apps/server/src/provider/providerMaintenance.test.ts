@@ -48,6 +48,18 @@ const nativePackageToolUpdate = makePackageManagedProviderMaintenanceResolver({
     isCommandPath: isNativeTestCommandPath("/.local/bin/native-package-tool"),
   },
 });
+const stableNativePackageToolUpdate = makePackageManagedProviderMaintenanceResolver({
+  provider: driver("stableNativePackageTool"),
+  npmPackageName: "@example/stable-native-package-tool",
+  homebrewFormula: null,
+  nativeUpdate: {
+    executable: "stable-native-package-tool",
+    args: ["update"],
+    lockKey: "stable-native-package-tool-native",
+    versionTag: "stable",
+    isCommandPath: isNativeTestCommandPath("/.local/bin/stable-native-package-tool"),
+  },
+});
 const scopedPackageToolUpdate = makePackageManagedProviderMaintenanceResolver({
   provider: driver("scopedPackageTool"),
   npmPackageName: "@example/scoped-package-tool",
@@ -271,6 +283,27 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         });
       }),
   );
+
+  it("uses the native installer's version channel for version advisories", () => {
+    const nativePath = "/home/test/.local/bin/stable-native-package-tool";
+    expect(
+      stableNativePackageToolUpdate.resolve({
+        binaryPath: nativePath,
+        resolvedCommandPath: nativePath,
+        realCommandPath: nativePath,
+      }),
+    ).toEqual({
+      provider: driver("stableNativePackageTool"),
+      packageName: "@example/stable-native-package-tool",
+      versionTag: "stable",
+      update: {
+        command: "stable-native-package-tool update",
+        executable: "stable-native-package-tool",
+        args: ["update"],
+        lockKey: "stable-native-package-tool-native",
+      },
+    });
+  });
 
   it.effect(
     "switches package-managed providers to pnpm updates when the resolved binary lives in pnpm's global bin",

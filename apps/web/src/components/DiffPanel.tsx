@@ -90,6 +90,7 @@ interface DiffPanelProps {
   mode?: DiffPanelMode;
   composerDraftTarget: ScopedThreadRef | DraftId;
   initialGitScope: "branch" | "unstaged";
+  gitCwd?: string | null;
 }
 
 export { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
@@ -98,6 +99,7 @@ export default function DiffPanel({
   mode = "inline",
   composerDraftTarget,
   initialGitScope: initialGitScopeProp,
+  gitCwd,
 }: DiffPanelProps) {
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
@@ -133,10 +135,10 @@ export default function DiffPanel({
         }
       : null,
   );
-  const activeCwd = activeThread?.worktreePath ?? activeProject?.workspaceRoot;
+  const activeCwd = activeThread?.worktreePath ?? gitCwd ?? activeProject?.workspaceRoot;
   const activeRepositoryRoot = activeThread?.worktreePath
     ? undefined
-    : activeProject?.repositoryIdentity?.rootPath;
+    : (gitCwd ?? activeProject?.repositoryIdentity?.rootPath);
   const serverConfig = useAtomValue(
     serverEnvironment.configValueAtom(activeThread?.environmentId ?? null),
   );

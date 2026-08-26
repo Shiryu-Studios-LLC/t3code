@@ -36,6 +36,8 @@ import {
   VcsCreateRefResult,
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
+  VcsDiscoverRepositoriesInput,
+  VcsDiscoverRepositoriesResult,
   VcsInitInput,
   VcsListRefsInput,
   VcsListRefsResult,
@@ -75,6 +77,11 @@ import {
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
 import {
+  ProviderSwarmControlError,
+  ProviderSwarmLaunchAgentInput,
+  ProviderSwarmLaunchAgentResult,
+  ProviderSwarmMessageAgentInput,
+  ProviderSwarmStopAgentInput,
   ProviderUploadFeedbackError,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
@@ -228,6 +235,9 @@ export const WS_METHODS = {
 
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
+  providerSwarmLaunchAgent: "provider.swarm.launchAgent",
+  providerSwarmMessageAgent: "provider.swarm.messageAgent",
+  providerSwarmStopAgent: "provider.swarm.stopAgent",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -321,6 +331,7 @@ export const WS_METHODS = {
   sourceControlPublishRepository: "sourceControl.publishRepository",
 
   // Streaming subscriptions
+  vcsDiscoverRepositories: "vcs.discoverRepositories",
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeTerminalMetadata: "subscribeTerminalMetadata",
@@ -700,11 +711,33 @@ export const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFee
   error: Schema.Union([ProviderUploadFeedbackError, EnvironmentAuthorizationError]),
 });
 
+export const WsProviderSwarmLaunchAgentRpc = Rpc.make(WS_METHODS.providerSwarmLaunchAgent, {
+  payload: ProviderSwarmLaunchAgentInput,
+  success: ProviderSwarmLaunchAgentResult,
+  error: Schema.Union([ProviderSwarmControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderSwarmMessageAgentRpc = Rpc.make(WS_METHODS.providerSwarmMessageAgent, {
+  payload: ProviderSwarmMessageAgentInput,
+  error: Schema.Union([ProviderSwarmControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderSwarmStopAgentRpc = Rpc.make(WS_METHODS.providerSwarmStopAgent, {
+  payload: ProviderSwarmStopAgentInput,
+  error: Schema.Union([ProviderSwarmControlError, EnvironmentAuthorizationError]),
+});
+
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
   success: VcsStatusStreamEvent,
   error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
   stream: true,
+});
+
+export const WsVcsDiscoverRepositoriesRpc = Rpc.make(WS_METHODS.vcsDiscoverRepositories, {
+  payload: VcsDiscoverRepositoriesInput,
+  success: VcsDiscoverRepositoriesResult,
+  error: EnvironmentAuthorizationError,
 });
 
 export const WsVcsPullRpc = Rpc.make(WS_METHODS.vcsPull, {
@@ -1072,6 +1105,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
+  WsProviderSwarmLaunchAgentRpc,
+  WsProviderSwarmMessageAgentRpc,
+  WsProviderSwarmStopAgentRpc,
+  WsVcsDiscoverRepositoriesRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,

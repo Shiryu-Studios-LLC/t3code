@@ -131,6 +131,21 @@ describe("ClientSettings sidebar", () => {
   });
 });
 
+describe("ServerSettings agent team concurrency", () => {
+  it("accepts up to 15 concurrent agents", () => {
+    expect(decodeServerSettings({ agentTeamMaxConcurrency: 15 }).agentTeamMaxConcurrency).toBe(15);
+    expect(decodeServerSettingsPatch({ agentTeamMaxConcurrency: 15 }).agentTeamMaxConcurrency).toBe(
+      15,
+    );
+  });
+
+  it("rejects a 16th concurrent agent and values below the supported minimum", () => {
+    expect(() => decodeServerSettings({ agentTeamMaxConcurrency: 16 })).toThrow();
+    expect(() => decodeServerSettingsPatch({ agentTeamMaxConcurrency: 16 })).toThrow();
+    expect(() => decodeServerSettings({ agentTeamMaxConcurrency: 1 })).toThrow();
+  });
+});
+
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults text generation to Luna at low reasoning effort", () => {
     expect(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection).toEqual({

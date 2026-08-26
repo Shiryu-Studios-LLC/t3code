@@ -159,6 +159,47 @@ describe("foldSubagentActivities", () => {
     expect(agent.status).toBe("running");
   });
 
+  it("does not reopen a completed agent from an older replayed progress frame", () => {
+    const [agent] = fold([
+      activity(
+        "task.started",
+        { taskId: "task-replay", taskType: "opencode_subagent" },
+        "2026-08-01T11:00:00.000Z",
+      ),
+      activity(
+        "task.updated",
+        { taskId: "task-replay", status: "completed" },
+        "2026-08-01T11:10:00.000Z",
+      ),
+      activity(
+        "task.progress",
+        { taskId: "task-replay", status: "running", summary: "late replay" },
+        "2026-08-01T11:05:00.000Z",
+      ),
+    ]);
+    expect(agent?.status).toBe("completed");
+    expect(agent?.activationCount).toBe(1);
+    expect(agent?.completedAt).toBe("2026-08-01T11:10:00.000Z");
+  });
+
+  it("clears a transient provider error after an explicit healthy running heartbeat", () => {
+    const [agent] = fold([
+      activity("task.started", { taskId: "task-retry", taskType: "opencode_subagent" }),
+      activity("task.progress", {
+        taskId: "task-retry",
+        status: "running",
+        error: "HTTP 429: Rate limited: Retry-After 20",
+      }),
+      activity("task.progress", {
+        taskId: "task-retry",
+        status: "running",
+        summary: "Working again",
+      }),
+    ]);
+    expect(agent?.status).toBe("running");
+    expect(agent?.error).toBeNull();
+  });
+
   it("idle is nonterminal: an idle agent resumes without losing identity", () => {
     const agents = fold([
       activity("task.started", { taskId: "codex-child-1", title: "Marlow", role: "explorer" }),
@@ -240,16 +281,16 @@ describe("foldSubagentActivities", () => {
     expect(agents[0]!.title).toBe("Good");
   });
 
-  it("bounds repeated strings at 180 chars and the activity ring at 6 deduped entries", () => {
+  it("bounds repeated strings at 180 chars and the activity ring at 15 deduped entries", () => {
     const long = "x".repeat(500);
     const rows = [activity("task.started", { taskId: "task-8", taskType: "local_agent" })];
-    for (let i = 0; i < 10; i += 1) {
-      rows.push(activity("task.progress", { taskId: "task-8", summary: `${long}-${i}` }));
+    for (let i = 0; i < 20; i += 1) {
+      rows.push(activity("task.progress", { taskId: "task-8", summary: `${i}-${long}` }));
     }
-    rows.push(activity("task.progress", { taskId: "task-8", summary: `${long}-9` }));
+    rows.push(activity("task.progress", { taskId: "task-8", summary: `19-${long}` }));
     const agents = fold(rows);
     const agent = agents[0]!;
-    expect(agent.recentActivity.length).toBeLessThanOrEqual(6);
+    expect(agent.recentActivity.length).toBe(15);
     for (const entry of agent.recentActivity) {
       expect(entry.summary.length).toBeLessThanOrEqual(180);
     }

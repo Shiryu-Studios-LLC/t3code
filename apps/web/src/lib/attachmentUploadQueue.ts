@@ -7,7 +7,7 @@ import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { create } from "zustand";
 
-import type { ComposerImageAttachment } from "../composerDraftStore";
+import type { ComposerAttachment } from "../composerDraftStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { attachmentEnvironment } from "../state/attachments";
 import { readPreparedConnection } from "../state/session";
@@ -25,7 +25,7 @@ export const useAttachmentUploadStore = create<AttachmentUploadStore>(() => ({
 }));
 
 interface UploadJob {
-  readonly image: ComposerImageAttachment;
+  readonly image: ComposerAttachment;
   readonly environmentId: EnvironmentId;
   readonly previous?: ReadyAttachmentUpload;
   readonly settled: Promise<void>;
@@ -101,10 +101,14 @@ function uploadBytes(input: {
 }
 
 async function runUpload(job: UploadJob): Promise<void> {
-  const mimeType = PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
-    (supportedMimeType) => supportedMimeType === job.image.mimeType.toLowerCase(),
-  );
-  if (!mimeType) {
+  const normalizedMimeType = job.image.mimeType.trim() || "application/octet-stream";
+  const imageMimeType =
+    job.image.type === "image"
+      ? PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.find(
+          (supportedMimeType) => supportedMimeType === normalizedMimeType.toLowerCase(),
+        )
+      : undefined;
+  if (job.image.type === "image" && !imageMimeType) {
     setUploadState(job.image.id, {
       status: "failed",
       environmentId: job.environmentId,
@@ -119,11 +123,19 @@ async function runUpload(job: UploadJob): Promise<void> {
     attachmentEnvironment.createUploadUrl,
     {
       environmentId: job.environmentId,
-      input: {
-        name: job.image.name,
-        mimeType,
-        sizeBytes: job.image.file.size,
-      },
+      input:
+        job.image.type === "image"
+          ? {
+              name: job.image.name,
+              mimeType: imageMimeType!,
+              sizeBytes: job.image.file.size,
+            }
+          : {
+              type: "file" as const,
+              name: job.image.name,
+              mimeType: normalizedMimeType,
+              sizeBytes: job.image.file.size,
+            },
     },
     { reportFailure: false },
   );
@@ -249,7 +261,7 @@ function pumpUploads(): void {
 
 export function startAttachmentUpload(input: {
   readonly environmentId: EnvironmentId;
-  readonly image: ComposerImageAttachment;
+  readonly image: ComposerAttachment;
 }): void {
   const existingJob = jobsByImageId.get(input.image.id);
   if (existingJob?.environmentId === input.environmentId) {
@@ -342,7 +354,7 @@ export function releaseAttachmentUpload(imageId: string): void {
 
 export function retryAttachmentUpload(input: {
   readonly environmentId: EnvironmentId;
-  readonly image: ComposerImageAttachment;
+  readonly image: ComposerAttachment;
 }): void {
   const previous = readAttachmentUpload(input.image.id);
   cancelAttachmentUpload(input.image.id);
@@ -363,7 +375,7 @@ export async function awaitAttachmentUploads(imageIds: ReadonlyArray<string>): P
 
 export function getUploadedAttachments(input: {
   readonly environmentId: EnvironmentId;
-  readonly images: ReadonlyArray<ComposerImageAttachment>;
+  readonly images: ReadonlyArray<ComposerAttachment>;
 }): ChatAttachment[] | null {
   const attachments: ChatAttachment[] = [];
   for (const image of input.images) {
@@ -371,18 +383,28 @@ export function getUploadedAttachments(input: {
     if (upload?.status !== "ready" || upload.environmentId !== input.environmentId) {
       return null;
     }
-    attachments.push({
-      type: "image",
-      id: upload.attachmentId,
-      name: image.name,
-      mimeType: image.mimeType,
-      sizeBytes: image.sizeBytes,
-    });
+    if (image.type === "image") {
+      attachments.push({
+        type: "image",
+        id: upload.attachmentId,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+      });
+    } else {
+      attachments.push({
+        type: "file",
+        id: upload.attachmentId,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+      });
+    }
   }
   return attachments;
 }
 
-export function releaseAttachmentUploads(images: ReadonlyArray<ComposerImageAttachment>): void {
+export function releaseAttachmentUploads(images: ReadonlyArray<ComposerAttachment>): void {
   for (const image of images) {
     releaseAttachmentUpload(image.id);
   }

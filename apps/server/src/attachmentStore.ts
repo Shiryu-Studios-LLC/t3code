@@ -9,9 +9,7 @@ import {
   normalizeAttachmentRelativePath,
   resolveAttachmentRelativePath,
 } from "./attachmentPaths.ts";
-import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
-
-const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
+import { inferImageExtension } from "./imageMime.ts";
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -80,7 +78,18 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
       });
       return `${attachment.id}${extension}`;
     }
+    case "file":
+      return `${attachment.id}${safeAttachmentFileExtension(attachment.name)}`;
   }
+}
+
+/**
+ * Preserve a useful user-facing extension without ever allowing the uploaded
+ * filename to influence directories or the attachment id itself.
+ */
+export function safeAttachmentFileExtension(fileName: string): string {
+  const extension = NodePath.extname(NodePath.basename(fileName)).toLowerCase();
+  return /^\.[a-z0-9][a-z0-9_+.-]{0,19}$/i.test(extension) ? extension : ".bin";
 }
 
 export function resolveAttachmentPath(input: {
@@ -101,13 +110,29 @@ export function resolveAttachmentPathById(input: {
   if (!normalizedId || normalizedId.includes("/") || normalizedId.includes(".")) {
     return null;
   }
-  for (const extension of ATTACHMENT_FILENAME_EXTENSIONS) {
+  let entries: string[];
+  try {
+    entries = NodeFS.readdirSync(input.attachmentsDir);
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (parseAttachmentIdFromRelativePath(entry) !== normalizedId) {
+      continue;
+    }
     const maybePath = resolveAttachmentRelativePath({
       attachmentsDir: input.attachmentsDir,
-      relativePath: `${normalizedId}${extension}`,
+      relativePath: entry,
     });
-    if (maybePath && NodeFS.existsSync(maybePath)) {
-      return maybePath;
+    if (!maybePath) {
+      continue;
+    }
+    try {
+      if (NodeFS.statSync(maybePath).isFile()) {
+        return maybePath;
+      }
+    } catch {
+      continue;
     }
   }
   return null;

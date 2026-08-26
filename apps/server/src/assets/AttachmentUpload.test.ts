@@ -108,6 +108,30 @@ describe("AttachmentUpload", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("stores generic file uploads with their safe filename extension", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const issued = yield* issueAttachmentUploadUrl({
+        type: "file",
+        name: "notes.final.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+      });
+      const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
+      const claims = yield* validateAttachmentUploadToken(token);
+      if (!claims) {
+        throw new Error("Expected valid file upload claims.");
+      }
+      expect(claims.type).toBe("file");
+      expect(yield* storeAttachmentUpload(claims, new Uint8Array([1, 2, 3, 4]))).toEqual({
+        ok: true,
+      });
+      expect(
+        NodeFS.existsSync(NodePath.join(config.attachmentsDir, `${issued.attachmentId}.pdf`)),
+      ).toBe(true);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("deletes pending uploads without deleting thread-owned copies", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

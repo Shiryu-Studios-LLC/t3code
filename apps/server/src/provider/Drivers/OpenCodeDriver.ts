@@ -13,6 +13,10 @@
  * @module provider/Drivers/OpenCodeDriver
  */
 import { OpenCodeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  DEFAULT_AGENT_TEAM_MAX_CONCURRENCY,
+  DEFAULT_AGENT_TEAM_MODE,
+} from "@t3tools/contracts/settings";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -131,6 +135,15 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies OpenCodeSettings;
+      // OpenCode's native task tool can launch true non-blocking child
+      // sessions behind this feature flag. T3's Agent Team mode uses that
+      // capability when available so the lead can fan out several workers
+      // before waiting for results. Respect an explicit host override.
+      const adapterEnvironment: NodeJS.ProcessEnv = {
+        ...processEnv,
+        OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS:
+          processEnv.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS ?? "true",
+      };
       const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,
@@ -138,7 +151,18 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
 
       const adapter = yield* makeOpenCodeAdapter(effectiveConfig, {
         instanceId,
-        environment: processEnv,
+        environment: adapterEnvironment,
+        getAgentTeamSettings: () =>
+          serverSettings.getSettings.pipe(
+            Effect.map((settings) => ({
+              mode: settings.agentTeamMode,
+              maxConcurrency: settings.agentTeamMaxConcurrency,
+            })),
+            Effect.orElseSucceed(() => ({
+              mode: DEFAULT_AGENT_TEAM_MODE,
+              maxConcurrency: DEFAULT_AGENT_TEAM_MAX_CONCURRENCY,
+            })),
+          ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const textGeneration = yield* makeOpenCodeTextGeneration(effectiveConfig, processEnv);

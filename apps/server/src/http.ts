@@ -3,6 +3,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
+  EnvironmentHttpInternalServerError,
 } from "@t3tools/contracts";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import { decodeOtlpTraceRecords } from "@t3tools/shared/observability";
@@ -16,6 +17,7 @@ import { cast } from "effect/Function";
 import {
   HttpBody,
   HttpClient,
+  HttpClientError,
   HttpClientResponse,
   HttpMiddleware,
   HttpRouter,
@@ -138,6 +140,75 @@ export const serverEnvironmentHttpApiLayer = HttpApiBuilder.group(
       Effect.fn("environment.metadata.descriptor")(function* (args) {
         yield* annotateEnvironmentRequest(args.endpoint.name);
         return yield* serverEnvironment.getDescriptor;
+      }, traceRelayRequest),
+    );
+  }),
+);
+
+const OPENAI_SPEECH_ENDPOINT = "https://api.openai.com/v1/audio/speech";
+const OPENAI_SPEECH_MODEL = "gpt-4o-mini-tts";
+
+export const textToSpeechHttpApiLayer = HttpApiBuilder.group(
+  EnvironmentHttpApi,
+  "textToSpeech",
+  Effect.fnUntraced(function* (handlers) {
+    const httpClient = yield* HttpClient.HttpClient;
+    return handlers.handle(
+      "synthesize",
+      Effect.fn("environment.textToSpeech.synthesize")(function* ({ payload }) {
+        const apiKey = process.env.OPENAI_API_KEY?.trim();
+        if (!apiKey) {
+          return yield* new EnvironmentHttpInternalServerError({
+            message: "OpenAI text-to-speech requires OPENAI_API_KEY on the T3 host.",
+          });
+        }
+
+        const response = yield* httpClient
+          .post(OPENAI_SPEECH_ENDPOINT, {
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: HttpBody.jsonUnsafe({
+              model: OPENAI_SPEECH_MODEL,
+              voice: payload.voice,
+              input: payload.text,
+              response_format: "mp3",
+              speed: payload.rate,
+            }),
+          })
+          .pipe(
+            Effect.flatMap(HttpClientResponse.filterStatusOk),
+            Effect.mapError((cause) => {
+              const status =
+                HttpClientError.isHttpClientError(cause) && cause.response !== undefined
+                  ? cause.response.status
+                  : null;
+              const message =
+                status === 401
+                  ? "OpenAI rejected OPENAI_API_KEY on the T3 host. Replace it with a valid OpenAI API key and restart T3."
+                  : status === 429
+                    ? "OpenAI text-to-speech is rate limited or the API project has no available quota."
+                    : status === null
+                      ? "OpenAI text-to-speech request failed."
+                      : `OpenAI text-to-speech request failed with HTTP ${status}.`;
+              return new EnvironmentHttpInternalServerError({ message });
+            }),
+          );
+
+        const audioBuffer = yield* response.arrayBuffer.pipe(
+          Effect.mapError(
+            () =>
+              new EnvironmentHttpInternalServerError({
+                message: "OpenAI text-to-speech returned unreadable audio.",
+              }),
+          ),
+        );
+
+        return {
+          audioBase64: Buffer.from(audioBuffer).toString("base64"),
+          mimeType: "audio/mpeg",
+        };
       }, traceRelayRequest),
     );
   }),

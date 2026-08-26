@@ -179,6 +179,47 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
   },
   {
+    id: "agent-team-mode",
+    title: "Agent team mode",
+    to: "/settings/general",
+  },
+  {
+    id: "agent-team-concurrency",
+    title: "Agent team concurrency",
+    to: "/settings/general",
+    targetId: "agent-team-mode",
+  },
+  {
+    id: "text-to-speech",
+    title: "Text to speech",
+    to: "/settings/general",
+    desktopOnly: true,
+  },
+  {
+    id: "text-to-speech-auto-read",
+    title: "Automatically read responses",
+    to: "/settings/general",
+    desktopOnly: true,
+  },
+  {
+    id: "text-to-speech-provider",
+    title: "Speech provider",
+    to: "/settings/general",
+    desktopOnly: true,
+  },
+  {
+    id: "text-to-speech-voice",
+    title: "Speech voice",
+    to: "/settings/general",
+    desktopOnly: true,
+  },
+  {
+    id: "text-to-speech-rate",
+    title: "Speech rate",
+    to: "/settings/general",
+    desktopOnly: true,
+  },
+  {
     id: "diagnostics",
     title: "Diagnostics",
     to: "/settings/general",

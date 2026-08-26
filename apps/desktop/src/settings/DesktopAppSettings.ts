@@ -57,7 +57,7 @@ export interface DesktopSettingsChange {
 
 export const DEFAULT_TAILSCALE_SERVE_PORT = 443;
 const MIN_MAIN_WINDOW_SIZE = {
-  width: 840,
+  width: 440,
   height: 620,
 } as const;
 export const DesktopWindowBoundsSchema = Schema.Struct({

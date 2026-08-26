@@ -117,6 +117,9 @@ const startupDependencies = Layer.mergeAll(
     getInstanceInfo: () => Effect.die("unused"),
     rollbackConversation: () => Effect.die("unused"),
     uploadFeedback: () => Effect.die("unused"),
+    launchSwarmAgent: () => Effect.die("unused"),
+    messageSwarmAgent: () => Effect.die("unused"),
+    stopSwarmAgent: () => Effect.die("unused"),
     streamEvents: Stream.empty,
   }),
 );

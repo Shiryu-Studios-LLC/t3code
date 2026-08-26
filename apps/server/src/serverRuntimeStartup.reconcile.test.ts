@@ -43,10 +43,34 @@ const makeThread = (
   },
 });
 
-const makeProviderService = (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
+const makeProviderService = (
+  liveThreadIds: ReadonlyArray<ThreadId> = [],
+  recovery?: { readonly started: ThreadId[]; readonly continued: ThreadId[] },
+) =>
   ({
-    startSession: () => Effect.die("unused"),
-    sendTurn: () => Effect.die("unused"),
+    startSession: (threadId) =>
+      recovery
+        ? Effect.sync(() => {
+            recovery.started.push(threadId);
+            return {
+              provider: ProviderDriverKind.make("codex"),
+              providerInstanceId,
+              status: "ready" as const,
+              runtimeMode: "full-access" as const,
+              threadId,
+              resumeCursor: { cursor: threadId },
+              createdAt: updatedAt,
+              updatedAt,
+            };
+          })
+        : Effect.die("unused"),
+    sendTurn: (input) =>
+      recovery
+        ? Effect.sync(() => {
+            recovery.continued.push(input.threadId);
+            return { threadId: input.threadId, turnId: TurnId.make(`recovered-${input.threadId}`) };
+          })
+        : Effect.die("unused"),
     interruptTurn: () => Effect.die("unused"),
     respondToRequest: () => Effect.die("unused"),
     respondToUserInput: () => Effect.die("unused"),
@@ -56,6 +80,9 @@ const makeProviderService = (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
     getInstanceInfo: () => Effect.die("unused"),
     rollbackConversation: () => Effect.die("unused"),
     uploadFeedback: () => Effect.die("unused"),
+    launchSwarmAgent: () => Effect.die("unused"),
+    messageSwarmAgent: () => Effect.die("unused"),
+    stopSwarmAgent: () => Effect.die("unused"),
     streamEvents: Stream.empty,
   }) satisfies ProviderService.ProviderService["Service"];
 
@@ -69,6 +96,7 @@ const runReconciliation = (input: {
   readonly liveThreadIds?: ReadonlyArray<ThreadId>;
   readonly directory: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
   readonly dispatch: OrchestrationEngine.OrchestrationEngineService["Service"]["dispatch"];
+  readonly recovery?: { readonly started: ThreadId[]; readonly continued: ThreadId[] };
 }) =>
   ServerRuntimeStartup.reconcileProviderSessions.pipe(
     Effect.provideService(
@@ -77,7 +105,7 @@ const runReconciliation = (input: {
     ),
     Effect.provideService(
       ProviderService.ProviderService,
-      makeProviderService(input.liveThreadIds),
+      makeProviderService(input.liveThreadIds, input.recovery),
     ),
     Effect.provideService(ProviderSessionDirectory.ProviderSessionDirectory, input.directory),
     Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
@@ -88,6 +116,47 @@ const runReconciliation = (input: {
     }),
     Effect.provide(NodeServices.layer),
   );
+
+it.effect("proactively resumes and continues persisted active work after restart", () => {
+  const running = makeThread("thread-recover-running", "running", TurnId.make("old-turn"));
+  const started: ThreadId[] = [];
+  const continued: ThreadId[] = [];
+  const dispatched: OrchestrationCommand[] = [];
+  const fallbackUpserts: ProviderSessionDirectory.ProviderRuntimeBinding[] = [];
+
+  return runReconciliation({
+    threads: [running],
+    recovery: { started, continued },
+    directory: {
+      getBinding: () =>
+        Effect.succeed(
+          Option.some({
+            threadId: running.id,
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId,
+            status: "running" as const,
+            resumeCursor: { cursor: running.id },
+            runtimeMode: "full-access" as const,
+          }),
+        ),
+      upsert: (binding) => Effect.sync(() => fallbackUpserts.push(binding)),
+      getProvider: () => Effect.die("unused"),
+      listThreadIds: () => Effect.die("unused"),
+      listBindings: () => Effect.die("unused"),
+    },
+    dispatch: (command) =>
+      Effect.sync(() => dispatched.push(command)).pipe(Effect.as({ sequence: dispatched.length })),
+  }).pipe(
+    Effect.tap(() =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(started, [running.id]);
+        assert.deepStrictEqual(continued, [running.id]);
+        assert.deepStrictEqual(dispatched, []);
+        assert.deepStrictEqual(fallbackUpserts, []);
+      }),
+    ),
+  );
+});
 
 it.effect("reconciles multiple active and archived orphans but skips live sessions", () => {
   const starting = makeThread("thread-starting", "starting");

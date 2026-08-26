@@ -43,6 +43,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
+  ProviderSwarmControlError,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
@@ -101,6 +102,7 @@ import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import { readWorkflowScript } from "./orchestration/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
+import * as VcsRepositoryDiscovery from "./vcs/VcsRepositoryDiscovery.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
@@ -1557,6 +1559,118 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "provider" },
           ),
+        [WS_METHODS.providerSwarmLaunchAgent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSwarmLaunchAgent,
+            Effect.gen(function* () {
+              let createdWorktree: { readonly cwd: string; readonly path: string } | undefined;
+              let directory: string | undefined;
+
+              if (input.workspaceStrategy === "worktree") {
+                if (!input.projectCwd) {
+                  return yield* new ProviderSwarmControlError({
+                    threadId: input.threadId,
+                    operation: "launchAgent",
+                    detail: "An isolated worktree launch requires a project repository path.",
+                  });
+                }
+                const uuid = yield* crypto.randomUUIDv4.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderSwarmControlError({
+                        threadId: input.threadId,
+                        operation: "launchAgent",
+                        detail: `Failed to allocate an isolated worktree identifier: ${String(cause)}`,
+                      }),
+                  ),
+                );
+                const branch = `t3-swarm-${uuid}`;
+                const worktree = yield* gitWorkflow
+                  .createWorktree({
+                    cwd: input.projectCwd,
+                    refName: input.baseRefName ?? "HEAD",
+                    newRefName: branch,
+                    ...(input.baseRefName ? { baseRefName: input.baseRefName } : {}),
+                    path: null,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderSwarmControlError({
+                          threadId: input.threadId,
+                          operation: "launchAgent",
+                          detail: `Failed to create the isolated worktree: ${cause.message}`,
+                        }),
+                    ),
+                  );
+                directory = worktree.worktree.path;
+                createdWorktree = { cwd: input.projectCwd, path: directory };
+                yield* refreshGitStatus(input.projectCwd);
+              }
+
+              return yield* providerService
+                .launchSwarmAgent({
+                  threadId: input.threadId,
+                  task: input.task,
+                  ...(input.title ? { title: input.title } : {}),
+                  ...(directory ? { directory } : {}),
+                  workspaceStrategy: input.workspaceStrategy,
+                  ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderSwarmControlError({
+                        threadId: input.threadId,
+                        operation: "launchAgent",
+                        detail: cause.message,
+                      }),
+                  ),
+                  Effect.tapError(() =>
+                    createdWorktree
+                      ? gitWorkflow
+                          .removeWorktree({
+                            cwd: createdWorktree.cwd,
+                            path: createdWorktree.path,
+                            force: true,
+                          })
+                          .pipe(Effect.ignoreCause({ log: true }))
+                      : Effect.void,
+                  ),
+                );
+            }),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerSwarmMessageAgent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSwarmMessageAgent,
+            providerService.messageSwarmAgent(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSwarmControlError({
+                    threadId: input.threadId,
+                    operation: "messageAgent",
+                    detail: cause.message,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerSwarmStopAgent]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSwarmStopAgent,
+            providerService.stopSwarmAgent(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSwarmControlError({
+                    threadId: input.threadId,
+                    operation: "stopAgent",
+                    detail: cause.message,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,
@@ -2036,6 +2150,14 @@ const makeWsRpcLayer = (
               });
             }),
             { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.vcsDiscoverRepositories]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsDiscoverRepositories,
+            VcsRepositoryDiscovery.discoverRepositories(input),
+            {
+              "rpc.aggregate": "vcs",
+            },
           ),
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           observeRpcStream(

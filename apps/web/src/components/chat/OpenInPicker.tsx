@@ -303,17 +303,9 @@ export const OpenInPicker = memo(function OpenInPicker({
             className={cn("size-3.5", getOpenInIconClass(primaryOption.kind))}
           />
         )}
-        <span
-          className={
-            compact
-              ? "sr-only"
-              : "sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5"
-          }
-        >
-          Open
-        </span>
+        <span className="sr-only">Open</span>
       </Button>
-      <GroupSeparator {...(!compact ? { className: "hidden @3xl/header-actions:block" } : {})} />
+      <GroupSeparator className="hidden" />
       <Menu>
         <MenuTrigger
           render={

@@ -377,6 +377,99 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
     ),
   );
 
+  it.effect("recovers a plain-text commit message when the model ignores the JSON contract", () =>
+    withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+      Effect.gen(function* () {
+        runtimeMock.state.promptResult = {
+          data: {
+            parts: [
+              {
+                type: "text",
+                text: "Commit message: Improve mobile TTS controls\n\nKeep touch controls visible on narrow screens.",
+              },
+            ],
+          },
+        };
+
+        const result = yield* textGeneration.generateCommitMessage({
+          ...DEFAULT_COMMIT_MESSAGE_INPUT,
+          includeBranch: true,
+        });
+
+        expect(result).toEqual({
+          subject: "Improve mobile TTS controls",
+          body: "Keep touch controls visible on narrow screens.",
+          branch: "feature/improve-mobile-tts-controls",
+        });
+      }),
+    ),
+  );
+
+  it.effect("recovers JSON-like labeled fields that use single quotes", () =>
+    withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+      Effect.gen(function* () {
+        runtimeMock.state.promptResult = {
+          data: {
+            parts: [
+              {
+                type: "text",
+                text: "{'subject': 'Fix source control generation', 'body': 'Accept common OpenCode output', 'branch': 'source-control-fix'}",
+              },
+            ],
+          },
+        };
+
+        const result = yield* textGeneration.generateCommitMessage({
+          ...DEFAULT_COMMIT_MESSAGE_INPUT,
+          includeBranch: true,
+        });
+
+        expect(result).toEqual({
+          subject: "Fix source control generation",
+          body: "Accept common OpenCode output",
+          branch: "feature/source-control-fix",
+        });
+      }),
+    ),
+  );
+
+  it.effect("accepts JSON-like structured output with trailing commas and comments", () =>
+    withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
+      Effect.gen(function* () {
+        runtimeMock.state.promptResult = {
+          data: {
+            parts: [
+              {
+                type: "text",
+                text: [
+                  "```json",
+                  "{",
+                  '  "subject": "Tolerate OpenCode JSON formatting",',
+                  '  "body": "Use schema-validated lenient JSON parsing.", // harmless model comment',
+                  "}",
+                  "```",
+                ].join("\n"),
+              },
+            ],
+          },
+        };
+
+        const result = yield* textGeneration.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: "feature/opencode-jsonc",
+          stagedSummary: "M README.md",
+          stagedPatch: "diff --git a/README.md b/README.md",
+          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        });
+
+        expect(result).toEqual({
+          subject: "Tolerate OpenCode JSON formatting",
+          body: "Use schema-validated lenient JSON parsing.",
+        });
+      }),
+    ),
+  );
+
   it.effect("surfaces the upstream OpenCode structured-output error message", () =>
     withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
       Effect.gen(function* () {

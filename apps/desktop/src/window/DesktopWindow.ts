@@ -287,6 +287,12 @@ export const make = Effect.gen(function* () {
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
+  let explicitQuitRequested = false;
+  let tray: Electron.Tray | null = null;
+
+  Electron.app.on("before-quit", () => {
+    explicitQuitRequested = true;
+  });
 
   const dismissConnectingSplash = Effect.gen(function* () {
     const splash = yield* Ref.getAndSet(splashWindowRef, Option.none());
@@ -348,7 +354,7 @@ export const make = Effect.gen(function* () {
     }
     const window = yield* electronWindow.create({
       ...initialBounds,
-      minWidth: 840,
+      minWidth: 440,
       minHeight: 620,
       show: false,
       autoHideMenuBar: true,
@@ -592,8 +598,15 @@ export const make = Effect.gen(function* () {
     window.on("move", scheduleBoundsPersist);
     window.on("maximize", scheduleBoundsPersist);
     window.on("unmaximize", scheduleBoundsPersist);
-    window.on("close", () => {
+    window.on("close", (event) => {
       runFork(flushBoundsPersist);
+      if (
+        !explicitQuitRequested &&
+        (environment.platform === "win32" || environment.platform === "linux")
+      ) {
+        event.preventDefault();
+        window.hide();
+      }
     });
 
     if (environment.platform === "darwin") {
@@ -745,9 +758,6 @@ export const make = Effect.gen(function* () {
     });
 
     loadApplication();
-    if (environment.isDevelopment) {
-      window.webContents.openDevTools({ mode: "detach" });
-    }
 
     window.on("closed", () => {
       clearDevelopmentLoadRetry();
@@ -778,6 +788,45 @@ export const make = Effect.gen(function* () {
     yield* electronWindow.reveal(window);
     return window;
   }).pipe(Effect.withSpan("desktop.window.revealOrCreateMain"));
+
+  if (environment.platform === "win32" || environment.platform === "linux") {
+    const iconPaths = yield* assets.iconPaths;
+    const trayIconPath = Option.getOrElse(
+      environment.platform === "win32" ? iconPaths.ico : iconPaths.png,
+      () => Option.getOrElse(iconPaths.png, () => ""),
+    );
+
+    if (trayIconPath.length > 0) {
+      tray = new Electron.Tray(trayIconPath);
+      tray.setToolTip(environment.displayName);
+      tray.setContextMenu(
+        Electron.Menu.buildFromTemplate([
+          {
+            label: `Show ${environment.displayName}`,
+            click: () => {
+              void runPromise(revealOrCreateMain);
+            },
+          },
+          { type: "separator" },
+          {
+            label: `Quit ${environment.displayName}`,
+            click: () => {
+              explicitQuitRequested = true;
+              void runPromise(electronApp.quit);
+            },
+          },
+        ]),
+      );
+      tray.on("click", () => {
+        void runPromise(revealOrCreateMain);
+      });
+      tray.on("double-click", () => {
+        void runPromise(revealOrCreateMain);
+      });
+    } else {
+      yield* logWindowWarning("system tray icon was unavailable; tray mode disabled");
+    }
+  }
 
   const createMainIfBackendReady = Effect.gen(function* () {
     const backendReady = yield* Ref.get(backendReadyRef);

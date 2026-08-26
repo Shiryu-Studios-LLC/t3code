@@ -4,6 +4,7 @@ import {
   type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ThreadId,
+  type VcsDiscoveredRepository,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -11,7 +12,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type { ChangeRequestSettleSource } from "@t3tools/client-runtime/state/thread-settled";
-import { ChevronDownIcon } from "lucide-react";
+import { BotIcon, ChevronDownIcon, GitBranchIcon, PlusIcon } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -45,6 +46,7 @@ import {
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
 import { cn } from "~/lib/utils";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -65,6 +67,11 @@ interface ChatHeaderProps {
   availableEditors: ReadonlyArray<EditorId>;
   rightPanelOpen: boolean;
   gitCwd: string | null;
+  gitRepositories: ReadonlyArray<VcsDiscoveredRepository>;
+  selectedGitRepositoryCwd: string | null;
+  onSelectGitRepository: (cwd: string) => void;
+  liveAgentCount: number;
+  onOpenAgents: () => void;
   readonly onOpenPullRequest?: ((number: number) => void) | undefined;
   onNewThreadInProject: () => void;
   onRunProjectScript: (script: ProjectScript) => void;
@@ -134,6 +141,11 @@ export const ChatHeader = memo(function ChatHeader({
   availableEditors,
   rightPanelOpen,
   gitCwd,
+  gitRepositories,
+  selectedGitRepositoryCwd,
+  onSelectGitRepository,
+  liveAgentCount,
+  onOpenAgents,
   onOpenPullRequest,
   onNewThreadInProject,
   onRunProjectScript,
@@ -285,7 +297,7 @@ export const ChatHeader = memo(function ChatHeader({
   );
   return (
     <div
-      className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
+      className="@container/header-actions flex min-w-0 flex-1 items-center gap-1 sm:gap-3"
       onContextMenu={handleHeaderContextMenu}
     >
       <WorkspaceBreadcrumb ariaLabel="Thread breadcrumb" className="flex-1">
@@ -294,7 +306,7 @@ export const ChatHeader = memo(function ChatHeader({
             doesn't answer it. */}
         {activeProjectName ? (
           <>
-            <WorkspaceBreadcrumbItem>
+            <WorkspaceBreadcrumbItem className="shrink-0">
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -312,12 +324,29 @@ export const ChatHeader = memo(function ChatHeader({
                     faviconPath={activeProjectFaviconPath}
                     className="size-3.5"
                   />
-                  <span className="max-w-40 truncate">{activeProjectName}</span>
+                  <span className="hidden max-w-40 truncate sm:inline">{activeProjectName}</span>
                 </TooltipTrigger>
                 <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
               </Tooltip>
             </WorkspaceBreadcrumbItem>
-            <WorkspaceBreadcrumbSeparator />
+            <WorkspaceBreadcrumbItem className="shrink-0">
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={`New chat in ${activeProjectName}`}
+                      onClick={onNewThreadInProject}
+                      className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                    />
+                  }
+                >
+                  <PlusIcon className="size-4" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">New chat in {activeProjectName}</TooltipPopup>
+              </Tooltip>
+            </WorkspaceBreadcrumbItem>
+            <WorkspaceBreadcrumbSeparator className="hidden sm:flex" />
           </>
         ) : null}
         <WorkspaceBreadcrumbItem current className="flex-1">
@@ -354,7 +383,7 @@ export const ChatHeader = memo(function ChatHeader({
                 <ChevronDownIcon
                   aria-hidden
                   data-thread-title-chevron
-                  className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/thread-title:opacity-100 group-focus-visible/thread-title:opacity-100"
+                  className="size-3.5 shrink-0 text-muted-foreground opacity-100 transition-opacity sm:opacity-0 sm:group-hover/thread-title:opacity-100 sm:group-focus-visible/thread-title:opacity-100"
                 />
               </TooltipTrigger>
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
@@ -376,37 +405,98 @@ export const ChatHeader = memo(function ChatHeader({
       <div
         data-chat-header-actions
         className={cn(
-          "flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3",
-          rightPanelOpen ? "pr-0" : "pr-16",
+          "flex shrink-0 items-center justify-end gap-0.5 sm:gap-1.5 @5xl/header-actions:gap-3",
+          rightPanelOpen ? "pr-0" : "pr-14 sm:pr-16",
         )}
       >
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                onClick={onOpenAgents}
+                className="relative inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                aria-label="Open swarm control center"
+              />
+            }
+          >
+            <BotIcon className="size-3.5" aria-hidden />
+            <span className="hidden sm:inline">Swarm</span>
+            {liveAgentCount > 0 ? (
+              <span
+                aria-label="Swarm active"
+                className="size-1.5 shrink-0 rounded-full bg-info shadow-[0_0_0_3px_color-mix(in_oklab,var(--color-info)_14%,transparent)]"
+              />
+            ) : null}
+          </TooltipTrigger>
+          <TooltipPopup side="bottom">
+            {liveAgentCount > 0 ? "Swarm activity is running" : "Swarm control center"}
+          </TooltipPopup>
+        </Tooltip>
         {activeProjectScripts && (
-          <ProjectScriptsControl
-            scripts={activeProjectScripts}
-            fileScripts={fileScripts}
-            keybindings={keybindings}
-            preferredScriptId={preferredScriptId}
-            onRunScript={onRunProjectScript}
-            onAddScript={onAddProjectScript}
-            onUpdateScript={onUpdateProjectScript}
-            onDeleteScript={onDeleteProjectScript}
-          />
+          <div className="hidden sm:block">
+            <ProjectScriptsControl
+              scripts={activeProjectScripts}
+              fileScripts={fileScripts}
+              keybindings={keybindings}
+              preferredScriptId={preferredScriptId}
+              onRunScript={onRunProjectScript}
+              onAddScript={onAddProjectScript}
+              onUpdateScript={onUpdateProjectScript}
+              onDeleteScript={onDeleteProjectScript}
+            />
+          </div>
         )}
         {showOpenInPicker && (
-          <OpenInPicker
-            environmentId={activeThreadEnvironmentId}
-            keybindings={keybindings}
-            availableEditors={availableEditors}
-            openInCwd={openInCwd}
-          />
+          <div className="hidden sm:block">
+            <OpenInPicker
+              environmentId={activeThreadEnvironmentId}
+              keybindings={keybindings}
+              availableEditors={availableEditors}
+              openInCwd={openInCwd}
+            />
+          </div>
         )}
         {activeProjectName && (
-          <GitActionsControl
-            gitCwd={gitCwd}
-            activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
-            onOpenPullRequest={onOpenPullRequest}
-            {...(draftId ? { draftId } : {})}
-          />
+          <>
+            {gitRepositories.length > 1 && selectedGitRepositoryCwd ? (
+              <Select
+                value={selectedGitRepositoryCwd}
+                onValueChange={(value) => {
+                  if (value) onSelectGitRepository(value);
+                }}
+              >
+                <SelectTrigger
+                  size="xs"
+                  variant="ghost"
+                  className="max-w-48 px-1.5 sm:px-2"
+                  aria-label="Active Git repository"
+                >
+                  <GitBranchIcon className="size-3.5 shrink-0 sm:hidden" aria-hidden />
+                  <span className="hidden min-w-0 sm:inline">
+                    <SelectValue>
+                      {gitRepositories.find(
+                        (repository) => repository.rootPath === selectedGitRepositoryCwd,
+                      )?.relativePath ?? "Repository"}
+                    </SelectValue>
+                  </span>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {gitRepositories.map((repository) => (
+                    <SelectItem key={repository.rootPath} hideIndicator value={repository.rootPath}>
+                      {repository.relativePath === "." ? repository.name : repository.relativePath}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            ) : null}
+            <GitActionsControl
+              gitCwd={gitCwd}
+              activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
+              onOpenPullRequest={onOpenPullRequest}
+              {...(draftId ? { draftId } : {})}
+            />
+          </>
         )}
       </div>
     </div>

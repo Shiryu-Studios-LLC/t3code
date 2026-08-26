@@ -361,6 +361,135 @@ function taskLinkageActivityFields(payload: Record<string, unknown>): Record<str
   return fields;
 }
 
+function openCodeTaskPromptFromLifecyclePayload(
+  payload: Record<string, unknown>,
+): string | undefined {
+  const data = payload.data;
+  if (typeof data !== "object" || data === null) return undefined;
+  const state = (data as Record<string, unknown>).state;
+  if (typeof state !== "object" || state === null) return undefined;
+  const input = (state as Record<string, unknown>).input;
+  if (typeof input !== "object" || input === null) return undefined;
+  const inputRecord = input as Record<string, unknown>;
+  for (const key of ["description", "prompt", "task", "instruction"] as const) {
+    const value = inputRecord[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return undefined;
+}
+
+function openCodeTaskMetadataFromLifecyclePayload(
+  payload: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const data = payload.data;
+  if (typeof data !== "object" || data === null) return undefined;
+  const state = (data as Record<string, unknown>).state;
+  if (typeof state !== "object" || state === null) return undefined;
+  const metadata = (state as Record<string, unknown>).metadata;
+  return typeof metadata === "object" && metadata !== null
+    ? (metadata as Record<string, unknown>)
+    : undefined;
+}
+
+function openCodeTaskChildSessionFromLifecyclePayload(
+  payload: Record<string, unknown>,
+): string | undefined {
+  const metadata = openCodeTaskMetadataFromLifecyclePayload(payload);
+  for (const key of ["sessionId", "sessionID", "session_id"] as const) {
+    const value = metadata?.[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return undefined;
+}
+
+function autoAgentNameFromTask(input: {
+  readonly title?: string;
+  readonly prompt?: string;
+}): string {
+  const title = input.title?.trim();
+  const genericTitle =
+    title === undefined || /^(?:task|agent|subagent|general|explore|build)$/i.test(title);
+  const source = genericTitle ? input.prompt?.trim() : title;
+  if (!source) return "Agent task";
+  const firstLine = source
+    .split(/\r?\n/, 1)[0]!
+    .replace(/^[-*#>\s]+/, "")
+    .replace(/^(?:please\s+)?(?:work on|handle|complete|implement|investigate)\s+/i, "")
+    .replace(/[.!?:;]+$/, "")
+    .trim();
+  if (!firstLine) return "Agent task";
+  return firstLine.length <= 56 ? firstLine : `${firstLine.slice(0, 55).trimEnd()}…`;
+}
+
+function collabAgentTaskActivity(
+  event: Extract<
+    ProviderRuntimeEvent,
+    { type: "item.started" | "item.updated" | "item.completed" }
+  >,
+): OrchestrationThreadActivity | null {
+  if (event.payload.itemType !== "collab_agent_tool_call" || event.itemId === undefined) {
+    return null;
+  }
+  const prompt = openCodeTaskPromptFromLifecyclePayload(event.payload as Record<string, unknown>);
+  const metadata = openCodeTaskMetadataFromLifecyclePayload(
+    event.payload as Record<string, unknown>,
+  );
+  const childSessionId = openCodeTaskChildSessionFromLifecyclePayload(
+    event.payload as Record<string, unknown>,
+  );
+  const background = metadata?.background === true;
+  // A background OpenCode task tool completes as soon as the child session
+  // has been launched; that is NOT the child agent completing. Child-session
+  // events emitted by OpenCodeAdapter own the agent lifecycle from here.
+  if (background && event.type === "item.completed") {
+    return null;
+  }
+  const title = autoAgentNameFromTask({
+    ...(event.payload.title ? { title: event.payload.title } : {}),
+    ...(prompt ? { prompt } : {}),
+  });
+  const status =
+    event.type === "item.completed"
+      ? event.payload.status === "failed"
+        ? "failed"
+        : "completed"
+      : "running";
+  const kind =
+    event.type === "item.started"
+      ? "task.started"
+      : event.type === "item.completed"
+        ? "task.completed"
+        : "task.progress";
+  const payload: Record<string, unknown> = {
+    taskId: String(event.itemId),
+    taskType: "opencode_subagent",
+    agentKind: "agent",
+    title,
+    role: "OpenCode subagent",
+    status,
+    ...(childSessionId ? { runHandles: { runId: childSessionId } } : {}),
+    ...(prompt ? { detail: prompt } : {}),
+  };
+  if (event.type === "item.updated" && event.payload.detail) {
+    payload.summary = truncateDetail(event.payload.detail);
+  }
+  if (event.type === "item.completed" && event.payload.detail) {
+    payload.summary = truncateDetail(event.payload.detail);
+    if (status === "failed") {
+      payload.error = truncateDetail(event.payload.detail);
+    }
+  }
+  return {
+    id: EventId.make(`${event.eventId}:agent`),
+    createdAt: event.createdAt,
+    tone: event.type === "item.completed" && status === "failed" ? "error" : "info",
+    kind,
+    summary: title,
+    payload,
+    turnId: toTurnId(event.turnId) ?? null,
+  };
+}
+
 export function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
   taskTitle?: string,
@@ -800,84 +929,84 @@ export function runtimeEventToActivities(
       // needs it: ws.ts and http.ts apply `projectActivityPayload` before any
       // payload reaches a client. Persist the projected form for non-terminal
       // updates; `item.completed` below still persists the full payload.
-      return [
-        projectActivityPayload({
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "tool",
-          kind: "tool.updated",
-          summary: event.payload.title ?? "Tool updated",
-          payload: {
-            itemType: event.payload.itemType,
-            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
-            ...(event.payload.status ? { status: event.payload.status } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
-            ...(event.payload.parentToolUseId
-              ? { parentToolUseId: event.payload.parentToolUseId }
-              : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
-        }),
-      ];
+      const toolActivity = projectActivityPayload({
+        id: event.eventId,
+        createdAt: event.createdAt,
+        tone: "tool",
+        kind: "tool.updated",
+        summary: event.payload.title ?? "Tool updated",
+        payload: {
+          itemType: event.payload.itemType,
+          ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
+          ...(event.payload.status ? { status: event.payload.status } : {}),
+          ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+          ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+          ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
+          ...(event.payload.parentToolUseId
+            ? { parentToolUseId: event.payload.parentToolUseId }
+            : {}),
+        },
+        turnId: toTurnId(event.turnId) ?? null,
+        ...maybeSequence,
+      });
+      const agentActivity = collabAgentTaskActivity(event);
+      return agentActivity ? [toolActivity, agentActivity] : [toolActivity];
     }
 
     case "item.completed": {
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "tool",
-          kind: "tool.completed",
-          summary: event.payload.title ?? "Tool",
-          payload: {
-            itemType: event.payload.itemType,
-            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
-            ...(event.payload.status ? { status: event.payload.status } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
-            ...(event.payload.parentToolUseId
-              ? { parentToolUseId: event.payload.parentToolUseId }
-              : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
+      const toolActivity: OrchestrationThreadActivity = {
+        id: event.eventId,
+        createdAt: event.createdAt,
+        tone: "tool",
+        kind: "tool.completed",
+        summary: event.payload.title ?? "Tool",
+        payload: {
+          itemType: event.payload.itemType,
+          ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
+          ...(event.payload.status ? { status: event.payload.status } : {}),
+          ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+          ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+          ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
+          ...(event.payload.parentToolUseId
+            ? { parentToolUseId: event.payload.parentToolUseId }
+            : {}),
         },
-      ];
+        turnId: toTurnId(event.turnId) ?? null,
+        ...maybeSequence,
+      };
+      const agentActivity = collabAgentTaskActivity(event);
+      return agentActivity ? [toolActivity, agentActivity] : [toolActivity];
     }
 
     case "item.started": {
       if (!isToolLifecycleItemType(event.payload.itemType)) {
         return [];
       }
-      return [
-        {
-          id: event.eventId,
-          createdAt: event.createdAt,
-          tone: "tool",
-          kind: "tool.started",
-          summary: `${event.payload.title ?? "Tool"} started`,
-          payload: {
-            itemType: event.payload.itemType,
-            ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
-            ...(event.payload.status ? { status: event.payload.status } : {}),
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
-            ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
-            ...(event.payload.parentToolUseId
-              ? { parentToolUseId: event.payload.parentToolUseId }
-              : {}),
-          },
-          turnId: toTurnId(event.turnId) ?? null,
-          ...maybeSequence,
+      const toolActivity: OrchestrationThreadActivity = {
+        id: event.eventId,
+        createdAt: event.createdAt,
+        tone: "tool",
+        kind: "tool.started",
+        summary: `${event.payload.title ?? "Tool"} started`,
+        payload: {
+          itemType: event.payload.itemType,
+          ...(event.itemId !== undefined ? { toolCallId: event.itemId } : {}),
+          ...(event.payload.status ? { status: event.payload.status } : {}),
+          ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+          ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+          ...(event.payload.agentId ? { agentId: event.payload.agentId } : {}),
+          ...(event.payload.parentToolUseId
+            ? { parentToolUseId: event.payload.parentToolUseId }
+            : {}),
         },
-      ];
+        turnId: toTurnId(event.turnId) ?? null,
+        ...maybeSequence,
+      };
+      const agentActivity = collabAgentTaskActivity(event);
+      return agentActivity ? [toolActivity, agentActivity] : [toolActivity];
     }
 
     default:

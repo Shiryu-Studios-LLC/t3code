@@ -115,6 +115,7 @@ import {
 interface ChatMarkdownProps {
   text: string;
   cwd: string | undefined;
+  workspaceRoot?: string | undefined;
   threadRef?: ScopedThreadRef | undefined;
   onTaskListChange?: ((input: { markerOffset: number; checked: boolean }) => void) | undefined;
   isStreaming?: boolean;
@@ -132,6 +133,35 @@ const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
 const WINDOWS_DRIVE_PATH_REGEX = /^[A-Za-z]:[\\/]/;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
+
+export function resolveMarkdownWorkspacePath(
+  workspaceRelativePath: string,
+  cwd: string | undefined,
+  workspaceRoot: string | undefined,
+): string {
+  const target = workspaceRelativePath.replaceAll("\\", "/");
+  if (!cwd || !workspaceRoot || /^(?:[A-Za-z]:\/|\/)/.test(target)) {
+    return target;
+  }
+
+  const normalizedCwd = cwd.replaceAll("\\", "/").replace(/\/+$/, "");
+  const normalizedRoot = workspaceRoot.replaceAll("\\", "/").replace(/\/+$/, "");
+  const cwdLower = normalizedCwd.toLocaleLowerCase();
+  const rootLower = normalizedRoot.toLocaleLowerCase();
+  if (cwdLower === rootLower || !cwdLower.startsWith(`${rootLower}/`)) {
+    return target;
+  }
+
+  const cwdRelative = normalizedCwd.slice(normalizedRoot.length + 1);
+  const strippedTarget = target.replace(/^\.\/+/, "").replace(/^\/+/, "");
+  if (
+    strippedTarget.toLocaleLowerCase() === cwdRelative.toLocaleLowerCase() ||
+    strippedTarget.toLocaleLowerCase().startsWith(`${cwdRelative.toLocaleLowerCase()}/`)
+  ) {
+    return strippedTarget;
+  }
+  return `${cwdRelative}/${strippedTarget}`;
+}
 
 interface MarkdownActionFailureContext {
   readonly operation: string;
@@ -1454,6 +1484,7 @@ function areMarkdownFileLinkPropsEqual(
 function ChatMarkdown({
   text,
   cwd,
+  workspaceRoot,
   threadRef,
   onTaskListChange,
   isStreaming = false,
@@ -1580,7 +1611,9 @@ function ChatMarkdown({
       // in flight.
       const isLatestLookup = claimWorkspaceBasenameLookup();
       const openAt = (path: string) =>
-        useRightPanelStore.getState().openFile(threadRef, path, line);
+        useRightPanelStore
+          .getState()
+          .openFile(threadRef, resolveMarkdownWorkspacePath(path, cwd, workspaceRoot), line);
       if (!cwd || !needsWorkspaceBasenameLookup(workspaceRelativePath)) {
         openAt(workspaceRelativePath);
         return;
@@ -1603,7 +1636,7 @@ function ChatMarkdown({
         openAt(match ?? workspaceRelativePath);
       })();
     },
-    [cwd, searchProjectEntries, threadRef],
+    [cwd, searchProjectEntries, threadRef, workspaceRoot],
   );
   /* eslint-disable react/no-unstable-nested-components -- ReactMarkdown requires component
    * renderers that close over this message's metadata. useMemo keeps them stable until that

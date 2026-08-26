@@ -3,6 +3,10 @@ import { create } from "zustand";
 import { normalizeProjectPathForComparison } from "./lib/projectPaths";
 
 export const PERSISTED_STATE_KEY = "t3code:ui-state:v1";
+const DEFAULT_PUBLIC_PAIRING_BASE_URL =
+  typeof import.meta !== "undefined" && import.meta.env.VITE_T3_PUBLIC_PAIRING_URL
+    ? import.meta.env.VITE_T3_PUBLIC_PAIRING_URL.trim() || null
+    : null;
 const THREAD_CHANGED_FILES_EXPANSION_VERSION = 1;
 const LEGACY_PERSISTED_STATE_KEYS = [
   "t3code:renderer-state:v8",
@@ -25,6 +29,7 @@ export interface PersistedUiState {
   expandedProjectCwds?: string[];
   projectOrderCwds?: string[];
   defaultAdvertisedEndpointKey?: string | null;
+  publicPairingBaseUrl?: string | null;
   threadChangedFilesExpansionVersion?: typeof THREAD_CHANGED_FILES_EXPANSION_VERSION;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
 }
@@ -41,6 +46,7 @@ export interface UiThreadState {
 
 export interface UiEndpointState {
   defaultAdvertisedEndpointKey: string | null;
+  publicPairingBaseUrl: string | null;
 }
 
 export interface UiState extends UiProjectState, UiThreadState, UiEndpointState {}
@@ -51,6 +57,7 @@ const initialState: UiState = {
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
   defaultAdvertisedEndpointKey: null,
+  publicPairingBaseUrl: DEFAULT_PUBLIC_PAIRING_BASE_URL,
 };
 
 const LEGACY_PROJECT_CWD_PREFERENCE_PREFIX = "legacy-project-cwd:";
@@ -135,6 +142,12 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
       parsed.defaultAdvertisedEndpointKey.length > 0
         ? parsed.defaultAdvertisedEndpointKey
         : null,
+    publicPairingBaseUrl:
+      parsed.publicPairingBaseUrl === undefined
+        ? DEFAULT_PUBLIC_PAIRING_BASE_URL
+        : typeof parsed.publicPairingBaseUrl === "string" && parsed.publicPairingBaseUrl.length > 0
+          ? parsed.publicPairingBaseUrl
+          : null,
   };
 }
 
@@ -205,6 +218,7 @@ export function persistState(state: UiState): void {
         projectOrder: state.projectOrder,
         threadLastVisitedAtById: state.threadLastVisitedAtById,
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
+        publicPairingBaseUrl: state.publicPairingBaseUrl,
         threadChangedFilesExpansionVersion: THREAD_CHANGED_FILES_EXPANSION_VERSION,
         threadChangedFilesExpandedById: state.threadChangedFilesExpandedById,
       } satisfies PersistedUiState),
@@ -304,6 +318,17 @@ export function setDefaultAdvertisedEndpointKey(state: UiState, key: string | nu
   };
 }
 
+export function setPublicPairingBaseUrl(state: UiState, value: string | null): UiState {
+  const nextValue = value && value.trim().length > 0 ? value.trim() : null;
+  if (state.publicPairingBaseUrl === nextValue) {
+    return state;
+  }
+  return {
+    ...state,
+    publicPairingBaseUrl: nextValue,
+  };
+}
+
 export function resolveProjectExpanded(
   projectExpandedById: Readonly<Record<string, boolean>>,
   preferenceKeys: readonly string[],
@@ -386,6 +411,7 @@ interface UiStateStore extends UiState {
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
+  setPublicPairingBaseUrl: (value: string | null) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
   reorderProjects: (
     currentProjectOrder: readonly string[],
@@ -404,6 +430,7 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
   setDefaultAdvertisedEndpointKey: (key) =>
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
+  setPublicPairingBaseUrl: (value) => set((state) => setPublicPairingBaseUrl(state, value)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),
   reorderProjects: (currentProjectOrder, draggedProjectIds, targetProjectIds) =>

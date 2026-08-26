@@ -30,6 +30,17 @@ export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"])
 export type TimestampFormat = typeof TimestampFormat.Type;
 export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 
+export const TextToSpeechProvider = Schema.Literals(["system", "openai"]);
+export type TextToSpeechProvider = typeof TextToSpeechProvider.Type;
+export const DEFAULT_TEXT_TO_SPEECH_PROVIDER: TextToSpeechProvider = "system";
+export const MIN_TEXT_TO_SPEECH_RATE = 0.5;
+export const MAX_TEXT_TO_SPEECH_RATE = 2;
+export const TextToSpeechRate = Schema.Number.check(
+  Schema.isBetween({ minimum: MIN_TEXT_TO_SPEECH_RATE, maximum: MAX_TEXT_TO_SPEECH_RATE }),
+);
+export type TextToSpeechRate = typeof TextToSpeechRate.Type;
+export const DEFAULT_TEXT_TO_SPEECH_RATE: TextToSpeechRate = 1;
+
 export const SidebarProjectSortOrder = Schema.Literals(["updated_at", "created_at", "manual"]);
 export type SidebarProjectSortOrder = typeof SidebarProjectSortOrder.Type;
 export const DEFAULT_SIDEBAR_PROJECT_SORT_ORDER: SidebarProjectSortOrder = "updated_at";
@@ -253,6 +264,19 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
+  ),
+  // Desktop-only for now. Browser/mobile clients safely decode and persist
+  // these fields but do not surface or act on them yet.
+  textToSpeechEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  textToSpeechAutoRead: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  textToSpeechProvider: TextToSpeechProvider.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_TEXT_TO_SPEECH_PROVIDER)),
+  ),
+  textToSpeechVoice: Schema.String.check(Schema.isMaxLength(200)).pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
+  textToSpeechRate: TextToSpeechRate.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_TEXT_TO_SPEECH_RATE)),
   ),
   wordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
@@ -574,6 +598,20 @@ export const BackgroundActivityProfileSelection = Schema.Literals([
 ]);
 export type BackgroundActivityProfileSelection = typeof BackgroundActivityProfileSelection.Type;
 
+export const AgentTeamMode = Schema.Literals(["off", "auto", "always"]);
+export type AgentTeamMode = typeof AgentTeamMode.Type;
+export const DEFAULT_AGENT_TEAM_MODE: AgentTeamMode = "auto";
+export const MIN_AGENT_TEAM_MAX_CONCURRENCY = 2;
+export const MAX_AGENT_TEAM_MAX_CONCURRENCY = 15;
+export const AgentTeamMaxConcurrency = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_AGENT_TEAM_MAX_CONCURRENCY,
+    maximum: MAX_AGENT_TEAM_MAX_CONCURRENCY,
+  }),
+);
+export type AgentTeamMaxConcurrency = typeof AgentTeamMaxConcurrency.Type;
+export const DEFAULT_AGENT_TEAM_MAX_CONCURRENCY: AgentTeamMaxConcurrency = 4;
+
 export const BackgroundActivityOverrides = Schema.Struct({
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),
   providerHealthRefreshInterval: Schema.optionalKey(Schema.DurationFromMillis),
@@ -617,6 +655,18 @@ export const ServerSettings = Schema.Struct({
    * between a desktop window and a phone attached to the same server.
    */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Controls whether capable providers may fan one user turn out to native
+   * child/subagents and then consolidate their results back into the lead
+   * conversation. OpenCode is the first adapter that consumes this setting;
+   * other adapters may opt in without changing the wire contract.
+   */
+  agentTeamMode: AgentTeamMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AGENT_TEAM_MODE)),
+  ),
+  agentTeamMaxConcurrency: AgentTeamMaxConcurrency.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AGENT_TEAM_MAX_CONCURRENCY)),
+  ),
   backgroundActivity: BackgroundActivitySettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
@@ -825,6 +875,8 @@ export const ServerSettingsPatch = Schema.Struct({
   enableLegacyTokenStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+  agentTeamMode: Schema.optionalKey(AgentTeamMode),
+  agentTeamMaxConcurrency: Schema.optionalKey(AgentTeamMaxConcurrency),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),
@@ -926,6 +978,11 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),
+  textToSpeechEnabled: Schema.optionalKey(Schema.Boolean),
+  textToSpeechAutoRead: Schema.optionalKey(Schema.Boolean),
+  textToSpeechProvider: Schema.optionalKey(TextToSpeechProvider),
+  textToSpeechVoice: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(200))),
+  textToSpeechRate: Schema.optionalKey(TextToSpeechRate),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

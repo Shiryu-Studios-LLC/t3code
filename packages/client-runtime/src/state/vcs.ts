@@ -272,6 +272,12 @@ export function createVcsEnvironmentAtoms<R, E>(
     });
 
   return {
+    discoverRepositories: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:discover-repositories",
+      tag: WS_METHODS.vcsDiscoverRepositories,
+      scheduler: vcsCommandScheduler,
+      concurrency: vcsCommandConcurrency,
+    }),
     listRefs,
     status: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:vcs:status",

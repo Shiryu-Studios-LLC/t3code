@@ -16,6 +16,10 @@ import type {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderSwarmLaunchAgentResolvedInput,
+  ProviderSwarmLaunchAgentResult,
+  ProviderSwarmMessageAgentInput,
+  ProviderSwarmStopAgentInput,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
   ThreadId,
@@ -92,6 +96,15 @@ export interface ProviderAdapterShape<TError> {
    * Stop one provider session.
    */
   readonly stopSession: (threadId: ThreadId) => Effect.Effect<void, TError>;
+
+  /** Optional native child-agent controls used by the Swarm surface. */
+  readonly launchSwarmAgent?: (
+    input: ProviderSwarmLaunchAgentResolvedInput,
+  ) => Effect.Effect<ProviderSwarmLaunchAgentResult, TError>;
+  readonly messageSwarmAgent?: (
+    input: ProviderSwarmMessageAgentInput,
+  ) => Effect.Effect<void, TError>;
+  readonly stopSwarmAgent?: (input: ProviderSwarmStopAgentInput) => Effect.Effect<void, TError>;
 
   /**
    * List currently active provider sessions for this adapter.

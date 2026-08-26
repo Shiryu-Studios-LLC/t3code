@@ -30,7 +30,7 @@ function buttonTag(html: string, ariaLabel: string) {
   return html.match(new RegExp(`<button[^>]*aria-label="${ariaLabel}"[^>]*>`))?.[0];
 }
 
-function expectResponsiveXsControl(markup: string | undefined) {
+function expectCompactXsControl(markup: string | undefined) {
   expect(markup).toBeDefined();
   expect(markup).toContain("h-7");
   expect(markup).toContain("gap-1");
@@ -40,26 +40,21 @@ function expectResponsiveXsControl(markup: string | undefined) {
   expect(markup).toContain("w-7");
   expect(markup).toContain("px-0");
   expect(markup).toContain("sm:w-6");
-  expect(markup).toContain("@3xl/header-actions:w-auto!");
-  expect(markup).toContain("@3xl/header-actions:px-[calc(--spacing(2)-1px)]");
+  expect(markup).not.toContain("@5xl/header-actions:w-auto!");
 }
 
 describe("ProjectScriptsControl compact controls", () => {
-  it("keeps the primary Run control compact and expands it with its label", () => {
+  it("keeps the primary Run control compact at every header width", () => {
     const html = renderControl([PRIMARY_SCRIPT]);
 
-    expectResponsiveXsControl(buttonTag(html, "Run Dev"));
-    expect(html).toContain(
-      'class="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5"',
-    );
+    expectCompactXsControl(buttonTag(html, "Run Dev"));
+    expect(html).toContain('<span class="sr-only">Dev</span>');
   });
 
-  it("keeps the standalone Add control compact and expands it with its label", () => {
+  it("keeps the standalone Add control compact at every header width", () => {
     const html = renderControl([]);
 
-    expectResponsiveXsControl(buttonTag(html, "Add action"));
-    expect(html).toContain(
-      'class="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5"',
-    );
+    expectCompactXsControl(buttonTag(html, "Add action"));
+    expect(html).toContain('<span class="sr-only">Add action</span>');
   });
 });
