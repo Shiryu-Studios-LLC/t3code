@@ -119,7 +119,7 @@ const derivedWorkLogEntryByActivity = new WeakMap<
 
 export interface PendingApproval {
   requestId: ApprovalRequestId;
-  requestKind: ProviderRequestKind;
+  requestKind: ProviderRequestKind | "unknown";
   createdAt: string;
   detail?: string;
   appName?: string;
@@ -443,10 +443,10 @@ export function derivePendingApprovals(
       ? payload.options.filter(isProviderApprovalOption)
       : undefined;
 
-    if (activity.kind === "approval.requested" && requestId && requestKind) {
+    if (activity.kind === "approval.requested" && requestId) {
       openByRequestId.set(requestId, {
         requestId,
-        requestKind,
+        requestKind: requestKind ?? "unknown",
         createdAt: activity.createdAt,
         ...(detail ? { detail } : {}),
         ...(appName ? { appName } : {}),

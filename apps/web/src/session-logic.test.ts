@@ -163,6 +163,32 @@ describe("derivePendingApprovals", () => {
     ]);
   });
 
+  it("keeps unknown provider permission requests actionable", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-open-unknown-permission",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Approval requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-unknown-permission",
+          requestType: "unknown",
+          detail: "gRPC TTS decouple refactor: read outside the workspace",
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "req-unknown-permission",
+        requestKind: "unknown",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        detail: "gRPC TTS decouple refactor: read outside the workspace",
+      },
+    ]);
+  });
+
   it("derives dynamic tool requests as actionable generic approvals", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
