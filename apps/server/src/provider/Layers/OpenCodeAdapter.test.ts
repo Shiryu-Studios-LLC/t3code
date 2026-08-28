@@ -76,6 +76,15 @@ const runtimeMock = {
     sessionDirectoryById: new Map<string, string>(),
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string }>,
+    childrenCalls: [] as Array<{ sessionID: string; directory?: string }>,
+    permissionListCalls: [] as Array<{ directory?: string }>,
+    pendingPermissions: [] as Array<{
+      id: string;
+      sessionID: string;
+      permission: string;
+      patterns: string[];
+      metadata: Record<string, unknown>;
+    }>,
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -96,6 +105,9 @@ const runtimeMock = {
     this.state.sessionDirectoryById.clear();
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
+    this.state.childrenCalls.length = 0;
+    this.state.permissionListCalls.length = 0;
+    this.state.pendingPermissions = [];
   },
 };
 
@@ -186,6 +198,10 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           }
         },
         messages: async () => ({ data: runtimeMock.state.messages }),
+        children: async ({ sessionID, directory }: { sessionID: string; directory?: string }) => {
+          runtimeMock.state.childrenCalls.push({ sessionID, ...(directory ? { directory } : {}) });
+          return { data: [] };
+        },
         revert: async ({ sessionID, messageID }: { sessionID: string; messageID?: string }) => {
           runtimeMock.state.revertCalls.push({
             sessionID,
@@ -203,6 +219,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             targetIndex >= 0
               ? runtimeMock.state.messages.slice(0, targetIndex + 1)
               : runtimeMock.state.messages;
+        },
+      },
+      permission: {
+        list: async ({ directory }: { directory?: string } = {}) => {
+          runtimeMock.state.permissionListCalls.push(directory ? { directory } : {});
+          return { data: runtimeMock.state.pendingPermissions };
         },
       },
       event: {
@@ -473,6 +495,19 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         NodeAssert.equal(progress.payload.taskId, "persisted-child-call");
         NodeAssert.equal(progress.payload.runHandles?.runId, childSessionID);
       }
+      const recoveryPrompt = runtimeMock.state.promptCalls.find(
+        (call) => (call as { sessionID?: string }).sessionID === childSessionID,
+      ) as { sessionID: string; directory?: string; parts?: Array<{ text?: string }> } | undefined;
+      NodeAssert.ok(recoveryPrompt);
+      NodeAssert.equal(recoveryPrompt.directory, process.cwd());
+      NodeAssert.match(
+        recoveryPrompt.parts?.[0]?.text ?? "",
+        /Resume from the persisted conversation/,
+      );
+      NodeAssert.deepEqual(runtimeMock.state.permissionListCalls, [{ directory: process.cwd() }]);
+      NodeAssert.deepEqual(runtimeMock.state.childrenCalls, [
+        { sessionID: parentSessionID, directory: process.cwd() },
+      ]);
     }),
   );
 

@@ -2234,14 +2234,19 @@ export function makeOpenCodeAdapter(
           sessionScope: started.sessionScope,
         };
 
+        sessions.set(input.threadId, context);
+        yield* startEventPump(context);
+
         // The parent OpenCode session is durable but T3's child-session
-        // correlation maps are in-memory. Rebuild them when adopting a
-        // persisted session so a desktop/server restart does not turn active
-        // subagents into orphaned/stale cards. The task tool stores the child
-        // session id in its persisted part metadata.
+        // correlation maps and pending-request maps are in-memory. Rebuild
+        // them before resuming work so a desktop/server restart cannot leave
+        // live children behind stale approval cards or miss their first events.
         if (!started.created) {
           yield* runOpenCodeSdk("session.messages.child-recovery", () =>
-            started.client.session.messages({ sessionID: started.openCodeSession.id }),
+            started.client.session.messages({
+              sessionID: started.openCodeSession.id,
+              directory,
+            }),
           ).pipe(
             Effect.flatMap((response) =>
               Effect.forEach(
@@ -2258,9 +2263,6 @@ export function makeOpenCodeAdapter(
                 { discard: true },
               ),
             ),
-            // Recovery is observability/liveness enrichment. A damaged or
-            // temporarily unavailable history endpoint must not prevent the
-            // parent conversation itself from resuming.
             Effect.catchCause((cause) =>
               Effect.logWarning("OpenCode child-session recovery skipped", {
                 threadId: input.threadId,
@@ -2269,12 +2271,105 @@ export function makeOpenCodeAdapter(
             ),
           );
 
-          // Direct/manual Swarm launches are OpenCode child sessions but do
-          // not have a parent task-tool part. Recover them from OpenCode's
-          // durable child inventory so their cards, capacity accounting, and
-          // native message/stop controls survive a T3 Studio restart.
+          yield* runOpenCodeSdk("permission.list.recovery", () =>
+            started.client.permission.list({ directory }),
+          ).pipe(
+            Effect.flatMap((response) =>
+              Effect.forEach(
+                response.data ?? [],
+                (request) => {
+                  context.pendingPermissions.set(request.id, request);
+                  const binding = context.childTaskBySessionId.get(request.sessionID);
+                  const detail =
+                    request.patterns.length > 0 ? request.patterns.join("\n") : request.permission;
+                  return Effect.gen(function* () {
+                    if (binding) {
+                      yield* emitChildTaskProgress(context, binding, {
+                        summary: "Waiting for permission",
+                        status: "waiting",
+                      });
+                    }
+                    yield* emit({
+                      ...(yield* buildEventBase({
+                        threadId: context.session.threadId,
+                        turnId: binding?.turnId,
+                        requestId: request.id,
+                      })),
+                      type: "request.opened",
+                      payload: {
+                        requestType: mapPermissionToRequestType(request.permission),
+                        detail: binding ? `${binding.title}: ${detail}` : detail,
+                        args: request.metadata,
+                      },
+                    });
+                  });
+                },
+                { discard: true },
+              ),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("OpenCode pending-permission recovery skipped", {
+                threadId: input.threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+
+          const hasPendingPermission = (childSessionId: string) =>
+            [...context.pendingPermissions.values()].some(
+              (request) => request.sessionID === childSessionId,
+            );
+          const resumeRecoveredChild = (binding: OpenCodeChildTaskBinding) =>
+            runOpenCodeSdk("session.promptAsync.child-recovery", () =>
+              started.client.session.promptAsync({
+                sessionID: binding.childSessionId,
+                directory,
+                parts: [
+                  {
+                    type: "text" as const,
+                    text: "T3 Studio restarted while you were working. Resume from the persisted conversation and current workspace. Continue only the remaining work, verify it, and report the result without repeating completed work. If a previous permission request disappeared during the restart, avoid that blocked external path unless it is still necessary; request permission again if you truly need it.",
+                  },
+                ],
+              }),
+            ).pipe(
+              Effect.andThen(
+                emitChildTaskProgress(context, binding, {
+                  summary: "Recovered after T3 Studio restart",
+                  status: "running",
+                }),
+              ),
+            );
+
+          // Task-tool children are reconstructed from persisted parent parts.
+          // Resume only unfinished children that are not still waiting on a
+          // genuine OpenCode permission; completed/error task parts stay put.
+          yield* Effect.forEach(
+            [...context.childTaskBySessionId.values()].filter(
+              (binding) =>
+                !binding.direct &&
+                !binding.parentTerminal &&
+                !binding.childTerminal &&
+                !hasPendingPermission(binding.childSessionId),
+            ),
+            resumeRecoveredChild,
+            { discard: true },
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("OpenCode task child recovery skipped", {
+                threadId: input.threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+
+          // Direct/manual Swarm launches do not have a parent task-tool part.
+          // Recover them from OpenCode's durable child inventory and only
+          // nudge sessions that are not represented by a task binding.
           yield* runOpenCodeSdk("session.children.swarm-recovery", () =>
-            started.client.session.children({ sessionID: started.openCodeSession.id }),
+            started.client.session.children({
+              sessionID: started.openCodeSession.id,
+              directory,
+            }),
           ).pipe(
             Effect.flatMap((response) =>
               Effect.forEach(
@@ -2299,24 +2394,12 @@ export function makeOpenCodeAdapter(
                   context.knownChildSessionIds.add(binding.childSessionId);
                   context.childTaskBySessionId.set(binding.childSessionId, binding);
                   context.childSessionIdByTaskId.set(binding.taskId, binding.childSessionId);
-                  return runOpenCodeSdk("session.promptAsync.swarm-recovery", () =>
-                    started.client.session.promptAsync({
-                      sessionID: binding.childSessionId,
-                      parts: [
-                        {
-                          type: "text" as const,
-                          text: "T3 Studio restarted while you were working. Resume from the persisted conversation and current workspace. Continue only the remaining work, verify it, and report the result without repeating completed work.",
-                        },
-                      ],
-                    }),
-                  ).pipe(
-                    Effect.andThen(
-                      emitChildTaskProgress(context, binding, {
-                        summary: "Recovered after T3 Studio restart",
-                        status: "running",
-                      }),
-                    ),
-                  );
+                  return hasPendingPermission(binding.childSessionId)
+                    ? emitChildTaskProgress(context, binding, {
+                        summary: "Waiting for permission",
+                        status: "waiting",
+                      })
+                    : resumeRecoveredChild(binding);
                 },
                 { discard: true },
               ),
@@ -2329,8 +2412,6 @@ export function makeOpenCodeAdapter(
             ),
           );
         }
-        sessions.set(input.threadId, context);
-        yield* startEventPump(context);
 
         yield* emit({
           ...(yield* buildEventBase({ threadId: input.threadId })),
