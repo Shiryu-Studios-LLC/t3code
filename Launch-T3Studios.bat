@@ -2,42 +2,20 @@
 setlocal
 
 set "T3_ROOT=%~dp0"
-set "T3_ELECTRON=%T3_ROOT%apps\desktop\node_modules\electron\dist\electron.exe"
-set "T3_MAIN=%T3_ROOT%apps\desktop\dist-electron\main.cjs"
+set "T3_LAUNCHER=%T3_ROOT%Launch-T3Studios.ps1"
+set "T3_POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 
-if not exist "%T3_ELECTRON%" (
-  echo T3 Studio could not start because Electron is missing:
-  echo   %T3_ELECTRON%
-  echo.
-  echo Open PowerShell in %T3_ROOT% and run: pnpm install
-  pause
-  exit /b 1
-)
-
-if not exist "%T3_MAIN%" (
-  echo T3 Studio could not start because the desktop build is missing:
-  echo   %T3_MAIN%
-  echo.
-  echo Open PowerShell in %T3_ROOT% and run: pnpm build:desktop
+if not exist "%T3_LAUNCHER%" (
+  echo T3 Studio could not start because the smart launcher is missing:
+  echo   %T3_LAUNCHER%
   pause
   exit /b 1
 )
 
 if /i "%~1"=="--check" (
-  echo T3 Studio launcher check passed.
-  echo Electron: %T3_ELECTRON%
-  echo App:      %T3_MAIN%
-  exit /b 0
+  "%T3_POWERSHELL%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%T3_LAUNCHER%" -Check
+  exit /b %errorlevel%
 )
 
-set "ELECTRON_RUN_AS_NODE="
-cd /d "%T3_ROOT%"
-start "T3 Studio" "%T3_ELECTRON%" "%T3_MAIN%"
-
-if errorlevel 1 (
-  echo T3 Studio failed to launch.
-  pause
-  exit /b 1
-)
-
+start "T3 Studio" "%T3_POWERSHELL%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "%T3_LAUNCHER%"
 endlocal
