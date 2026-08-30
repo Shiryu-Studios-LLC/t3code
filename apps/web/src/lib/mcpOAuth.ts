@@ -185,6 +185,7 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("redirect_uri", redirectUri);
   authUrl.searchParams.set("scope", scopeParam);
+  authUrl.searchParams.set("resource", mcpUrl);
   authUrl.searchParams.set("code_challenge", challenge);
   authUrl.searchParams.set("code_challenge_method", "S256");
   authUrl.searchParams.set("state", state);
@@ -259,6 +260,7 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
   tokenParams.set("redirect_uri", redirectUri);
   tokenParams.set("client_id", clientId);
   tokenParams.set("code_verifier", verifier);
+  tokenParams.set("resource", mcpUrl);
 
   const tokenRes = await fetch(metadata.tokenEndpoint, {
     method: "POST",
