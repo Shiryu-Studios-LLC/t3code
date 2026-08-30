@@ -22,10 +22,19 @@ import {
   type McpServerConfig,
 } from "@t3tools/contracts";
 import { PREVIEW_VIEWPORT_PRESETS } from "@t3tools/shared/previewViewport";
-import { InfoIcon, PlusIcon, ServerIcon, Trash2Icon } from "lucide-react";
-import type { ReactNode } from "react";
+import {
+  CheckCircle2Icon,
+  InfoIcon,
+  KeyRoundIcon,
+  Loader2Icon,
+  PlusIcon,
+  ServerIcon,
+  Trash2Icon,
+} from "lucide-react";
+import { useState, type ReactNode } from "react";
 
 import { ScreenRotationIcon } from "~/browser/ScreenRotationIcon";
+import { authorizeMcpServerWithPopup } from "~/lib/mcpOAuth";
 import { isElectron } from "../../env";
 
 import { Button } from "../ui/button";
@@ -460,6 +469,10 @@ function McpServersSetting() {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const servers = settings.mcpServers;
+  const [authorizingServerId, setAuthorizingServerId] = useState<string | null>(null);
+  const [authStatusByServerId, setAuthStatusByServerId] = useState<
+    Record<string, { status: "idle" | "authorizing" | "success" | "error"; message?: string }>
+  >({});
 
   const replaceServer = (id: string, update: (server: McpServerConfig) => McpServerConfig) =>
     updateSettings({
@@ -559,20 +572,117 @@ function McpServersSetting() {
               </Select>
 
               {server.transport.type === "http" ? (
-                <Input
-                  aria-label="MCP server URL"
-                  defaultValue={server.transport.url}
-                  placeholder="https://example.com/mcp"
-                  onBlur={(event) => {
-                    const url = event.currentTarget.value.trim();
-                    if (url)
-                      replaceServer(server.id, (value) =>
-                        value.transport.type === "http"
-                          ? { ...value, transport: { ...value.transport, url } }
-                          : value,
-                      );
-                  }}
-                />
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                      aria-label="MCP server URL"
+                      defaultValue={server.transport.url}
+                      className="min-w-[14rem] flex-1"
+                      placeholder="https://example.com/mcp"
+                      onBlur={(event) => {
+                        const url = event.currentTarget.value.trim();
+                        if (url)
+                          replaceServer(server.id, (value) =>
+                            value.transport.type === "http"
+                              ? { ...value, transport: { ...value.transport, url } }
+                              : value,
+                          );
+                      }}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={authorizingServerId === server.id}
+                      onClick={async () => {
+                        try {
+                          setAuthorizingServerId(server.id);
+                          setAuthStatusByServerId((prev) => ({
+                            ...prev,
+                            [server.id]: {
+                              status: "authorizing",
+                              message: "Opening OAuth authorization window...",
+                            },
+                          }));
+
+                          if (server.transport.type !== "http") {
+                            throw new Error("Only Remote HTTP MCP servers support OAuth.");
+                          }
+                          const result = await authorizeMcpServerWithPopup(server.transport.url);
+                          const tokenValue = `Bearer ${result.accessToken}`;
+
+                          replaceServer(server.id, (value) => {
+                            if (value.transport.type !== "http") return value;
+                            const existingIndex = value.transport.headers.findIndex(
+                              (h) => h.name.toLowerCase() === "authorization",
+                            );
+                            const nextHeaders =
+                              existingIndex >= 0
+                                ? value.transport.headers.map((h, i) =>
+                                    i === existingIndex ? { ...h, value: tokenValue } : h,
+                                  )
+                                : [
+                                    ...value.transport.headers,
+                                    { name: "Authorization", value: tokenValue },
+                                  ];
+
+                            return {
+                              ...value,
+                              transport: {
+                                ...value.transport,
+                                headers: nextHeaders,
+                              },
+                            };
+                          });
+
+                          setAuthStatusByServerId((prev) => ({
+                            ...prev,
+                            [server.id]: {
+                              status: "success",
+                              message: "Authenticated successfully with OAuth!",
+                            },
+                          }));
+                        } catch (err) {
+                          setAuthStatusByServerId((prev) => ({
+                            ...prev,
+                            [server.id]: {
+                              status: "error",
+                              message: err instanceof Error ? err.message : String(err),
+                            },
+                          }));
+                        } finally {
+                          setAuthorizingServerId(null);
+                        }
+                      }}
+                    >
+                      {authorizingServerId === server.id ? (
+                        <>
+                          <Loader2Icon className="size-3.5 animate-spin" /> Authorizing...
+                        </>
+                      ) : (
+                        <>
+                          <KeyRoundIcon className="size-3.5 text-primary" /> Authorize with OAuth
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  {authStatusByServerId[server.id]?.status === "authorizing" ? (
+                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Loader2Icon className="size-3.5 animate-spin text-primary" />
+                      {authStatusByServerId[server.id]?.message}
+                    </p>
+                  ) : authStatusByServerId[server.id]?.status === "success" ? (
+                    <p className="flex items-center gap-1.5 text-xs font-medium text-emerald-500">
+                      <CheckCircle2Icon className="size-3.5" />
+                      {authStatusByServerId[server.id]?.message}
+                    </p>
+                  ) : authStatusByServerId[server.id]?.status === "error" ? (
+                    <p className="flex items-center gap-1.5 text-xs text-destructive">
+                      <InfoIcon className="size-3.5" />
+                      {authStatusByServerId[server.id]?.message}
+                    </p>
+                  ) : null}
+                </div>
               ) : (
                 <Input
                   aria-label="MCP server command"

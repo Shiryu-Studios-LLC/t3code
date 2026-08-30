@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>T3 Studio — MCP Authorization</title>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background: #09090b;
+        color: #fafafa;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+        padding: 16px;
+        box-sizing: border-box;
+        text-align: center;
+      }
+      .card {
+        background: #18181b;
+        border: 1px solid #27272a;
+        border-radius: 12px;
+        padding: 32px;
+        max-width: 440px;
+        width: 100%;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+      }
+      h2 {
+        margin-top: 0;
+        margin-bottom: 8px;
+        font-size: 1.25rem;
+        font-weight: 600;
+      }
+      p {
+        color: #a1a1aa;
+        font-size: 0.875rem;
+        line-height: 1.5;
+        margin-bottom: 0;
+      }
+      .spinner {
+        margin: 20px auto 0;
+        width: 24px;
+        height: 24px;
+        border: 2px solid #27272a;
+        border-top-color: #3b82f6;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .code-box {
+        margin-top: 16px;
+        background: #09090b;
+        border: 1px solid #27272a;
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-family: monospace;
+        font-size: 0.8rem;
+        color: #93c5fd;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h2 id="title">Authorizing MCP Server</h2>
+      <p id="msg">Exchanging authorization code with T3 Studio...</p>
+      <div id="spinner" class="spinner"></div>
+      <div id="code-container" style="display: none">
+        <p style="margin-top: 12px; font-size: 0.75rem">
+          If the window does not close automatically, you can copy this code:
+        </p>
+        <div id="code-val" class="code-box"></div>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const code = params.get("code");
+          const state = params.get("state");
+          const error = params.get("error");
+          const error_description = params.get("error_description");
+
+          const titleEl = document.getElementById("title");
+          const msgEl = document.getElementById("msg");
+          const spinnerEl = document.getElementById("spinner");
+          const codeContainerEl = document.getElementById("code-container");
+          const codeValEl = document.getElementById("code-val");
+
+          if (error) {
+            titleEl.textContent = "Authorization Failed";
+            msgEl.textContent = error_description || error;
+            spinnerEl.style.display = "none";
+            if (window.opener) {
+              window.opener.postMessage(
+                {
+                  type: "t3-mcp-oauth-callback",
+                  error: error_description || error,
+                  state,
+                },
+                "*",
+              );
+            }
+            return;
+          }
+
+          if (code) {
+            if (window.opener) {
+              window.opener.postMessage(
+                {
+                  type: "t3-mcp-oauth-callback",
+                  code,
+                  state,
+                },
+                "*",
+              );
+              titleEl.textContent = "Authorized Successfully";
+              msgEl.textContent = "Connected to T3 Studio! This window will close automatically.";
+              setTimeout(() => {
+                window.close();
+              }, 1000);
+            } else {
+              titleEl.textContent = "Authorization Code";
+              msgEl.textContent = "Return to T3 Studio to complete connection.";
+              spinnerEl.style.display = "none";
+              codeContainerEl.style.display = "block";
+              codeValEl.textContent = code;
+            }
+          } else {
+            titleEl.textContent = "No Authorization Code";
+            msgEl.textContent = "No authorization code was found in the response URL.";
+            spinnerEl.style.display = "none";
+          }
+        } catch (err) {
+          document.getElementById("title").textContent = "Error";
+          document.getElementById("msg").textContent =
+            err.message || "An unexpected error occurred.";
+        }
+      })();
+    </script>
+  </body>
+</html>
