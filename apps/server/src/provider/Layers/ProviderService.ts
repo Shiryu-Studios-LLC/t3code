@@ -429,6 +429,30 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     () => reconcileInstanceSubscriptions,
   ).pipe(Effect.forkScoped);
 
+  const syncExternalMcpServers = (settings: ServerSettings.ServerSettings) =>
+    Effect.gen(function* () {
+      const servers = settings.mcpServers ?? [];
+      ExternalMcpProviderSession.setGlobalExternalMcpServers(servers);
+      const threadIds = yield* directory
+        .listThreadIds()
+        .pipe(Effect.catch(() => Effect.succeed([])));
+      for (const threadId of threadIds) {
+        ExternalMcpProviderSession.setExternalMcpProviderServers(threadId, servers);
+      }
+    });
+
+  const initialSettings = yield* serverSettings.getSettings.pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+  if (initialSettings) {
+    yield* syncExternalMcpServers(initialSettings);
+  }
+
+  const serverSettingsChanges = yield* serverSettings.subscribeChanges;
+  yield* Stream.runForEach(Stream.fromSubscription(serverSettingsChanges), (settings) =>
+    syncExternalMcpServers(settings),
+  ).pipe(Effect.forkScoped);
+
   const recoverSessionForThread = Effect.fn("recoverSessionForThread")(function* (input: {
     readonly binding: ProviderSessionDirectory.ProviderRuntimeBinding;
     readonly operation: string;
