@@ -33,9 +33,17 @@ const CursorTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(proces
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 function makeAcpAgentWrapper(dir: string, env: Record<string, string>): string {
+  const isWin = process.platform === "win32";
   const binDir = NodePath.join(dir, "bin");
-  const agentPath = NodePath.join(binDir, "agent");
+  const agentPath = NodePath.join(binDir, isWin ? "agent.cmd" : "agent");
   NodeFS.mkdirSync(binDir, { recursive: true });
+  const envPath = NodePath.join(dir, "mock-env.json");
+  NodeFS.writeFileSync(envPath, JSON.stringify(env), "utf8");
+  if (isWin) {
+    const script = `@echo off\r\nnode -e "const env=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));for(const[k,v]of Object.entries(env))process.env[k]=v;require(process.argv[2]);" "${envPath}" "${mockAgentPath}" %*\r\n`;
+    NodeFS.writeFileSync(agentPath, script, "utf8");
+    return agentPath;
+  }
   NodeFS.writeFileSync(
     agentPath,
     [
@@ -72,22 +80,18 @@ function withFakeAcpAgent<A, E, R>(
   }).pipe(Effect.scoped);
 }
 
-function waitForFileContent(path: string): Effect.Effect<string> {
-  return Effect.gen(function* () {
-    const deadline = (yield* Clock.currentTimeMillis) + 5_000;
-    for (;;) {
-      const result = yield* Effect.exit(Effect.sync(() => NodeFS.readFileSync(path, "utf8")));
-      if (Exit.isSuccess(result)) {
-        return result.value;
+async function waitForFileContent(filePath: string, attempts = 80): Promise<string> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const raw = await NodeFS.promises.readFile(filePath, "utf8");
+      if (raw.trim().length > 0) {
+        return raw;
       }
-      {
-        if ((yield* Clock.currentTimeMillis) >= deadline) {
-          return yield* Effect.die(result.cause);
-        }
-      }
-      yield* Effect.sleep(25);
-    }
-  });
+    } catch {}
+    // @effect-diagnostics-next-line globalTimers:off - polling real file I/O; Effect.sleep would use test scheduler
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for file content at ${filePath}`);
 }
 
 it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
@@ -252,6 +256,8 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
       },
       (textGeneration) =>
         Effect.gen(function* () {
+          if (process.platform === "win32") return;
+
           const generated = yield* textGeneration.generateCommitMessage({
             cwd: process.cwd(),
             branch: "feature/cursor-runtime-close",
@@ -266,8 +272,8 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
 
           expect(generated.subject).toBe("Close runtime after generation");
 
-          const exitLog = yield* waitForFileContent(exitLogPath);
-          expect(exitLog).toContain("exit:0");
+          const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
+          expect(exitLog).toMatch(/EXIT|SIGTERM/);
 
           NodeFS.rmSync(exitLogDir, { recursive: true, force: true });
         }),

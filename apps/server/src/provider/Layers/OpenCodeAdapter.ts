@@ -36,6 +36,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { externalMcpServersForOpenCode } from "../../mcp/ExternalMcpProviderConfig.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
@@ -2068,6 +2069,41 @@ export function makeOpenCodeAdapter(
                       oauth: false,
                     },
                   }),
+                ).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Could not register T3 Code MCP session with OpenCode", {
+                      cause,
+                    }),
+                  ),
+                );
+              }
+              if (!server.external) {
+                yield* Effect.forEach(
+                  externalMcpServersForOpenCode(input.threadId),
+                  (externalMcpServer) =>
+                    runOpenCodeSdk("mcp.add", () => client.mcp.add(externalMcpServer)).pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("Could not register external MCP server with OpenCode", {
+                          cause,
+                        }),
+                      ),
+                    ),
+                  { discard: true },
+                );
+              } else {
+                yield* Effect.forEach(
+                  externalMcpServersForOpenCode(input.threadId).filter(
+                    (externalMcpServer) => externalMcpServer.config.type === "remote",
+                  ),
+                  (externalMcpServer) =>
+                    runOpenCodeSdk("mcp.add", () => client.mcp.add(externalMcpServer)).pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("Could not register external MCP server with OpenCode", {
+                          cause,
+                        }),
+                      ),
+                    ),
+                  { discard: true },
                 );
               }
               // Resume: re-adopt the session named by the durable cursor —

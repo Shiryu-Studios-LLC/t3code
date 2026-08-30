@@ -44,9 +44,63 @@ function makeFakeCodexBinary(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const isWin = process.platform === "win32";
     const binDir = path.join(dir, "bin");
-    const codexPath = path.join(binDir, "codex");
+    const codexPath = path.join(binDir, isWin ? "codex.cmd" : "codex");
     yield* fs.makeDirectory(binDir, { recursive: true });
+
+    if (isWin) {
+      const jsPath = path.join(binDir, "fake-codex.cjs");
+      const jsContent = `
+const fs = require('fs');
+const args = process.argv.slice(2);
+let seenImage = false;
+let seenServiceTier = '';
+let seenReasoningEffort = '';
+let outputPath = '';
+
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--image') {
+    if (args[i + 1]) seenImage = true;
+    i++;
+  } else if (args[i] === '--config') {
+    const next = args[i + 1] || '';
+    if (next.startsWith('service_tier=')) seenServiceTier = next;
+    if (next.startsWith('model_reasoning_effort=')) seenReasoningEffort = next;
+    i++;
+  } else if (args[i] === '--output-last-message') {
+    outputPath = args[i + 1] || '';
+    i++;
+  }
+}
+
+let stdinContent = '';
+try { stdinContent = fs.readFileSync(0, 'utf8'); } catch (_) {}
+const originalArgs = ' ' + args.join(' ') + ' ';
+
+${input.requireArg ? `if (!originalArgs.includes(' ${input.requireArg} ')) { console.error('missing arg: ${input.requireArg}'); process.exit(8); }` : ""}
+${input.forbidArg ? `if (originalArgs.includes(' ${input.forbidArg} ')) { console.error('forbidden arg: ${input.forbidArg}'); process.exit(9); }` : ""}
+${input.requireImage ? `if (!seenImage) { console.error('missing --image input'); process.exit(2); }` : ""}
+${input.requireServiceTier ? `if (seenServiceTier !== 'service_tier="${input.requireServiceTier}"') { console.error('unexpected service tier config: ' + seenServiceTier); process.exit(5); }` : ""}
+${input.requireReasoningEffort !== undefined ? `if (seenReasoningEffort !== 'model_reasoning_effort="${input.requireReasoningEffort}"') { console.error('unexpected reasoning effort config: ' + seenReasoningEffort); process.exit(6); }` : ""}
+${input.forbidReasoningEffort ? `if (seenReasoningEffort) { console.error('reasoning effort config should be omitted: ' + seenReasoningEffort); process.exit(7); }` : ""}
+// @effect-diagnostics-next-line preferSchemaOverJson:off - generating Node.js script source, not serializing data
+${input.stdinMustContain !== undefined ? `if (!stdinContent.includes(${JSON.stringify(input.stdinMustContain)})) { console.error('stdin missing expected content'); process.exit(3); }` : ""}
+// @effect-diagnostics-next-line preferSchemaOverJson:off - generating Node.js script source, not serializing data
+${input.stdinMustNotContain !== undefined ? `if (stdinContent.includes(${JSON.stringify(input.stdinMustNotContain)})) { console.error('stdin contained forbidden content'); process.exit(4); }` : ""}
+// @effect-diagnostics-next-line preferSchemaOverJson:off - generating Node.js script source, not serializing data
+${input.stderr !== undefined ? `console.error(${JSON.stringify(input.stderr)});` : ""}
+
+if (outputPath) {
+  // @effect-diagnostics-next-line preferSchemaOverJson:off - generating Node.js script source, not serializing data
+  fs.writeFileSync(outputPath, ${JSON.stringify(input.output)}, 'utf8');
+}
+process.exit(${input.exitCode ?? 0});
+`;
+      yield* fs.writeFileString(jsPath, jsContent);
+      yield* fs.writeFileString(codexPath, `@echo off\r\nnode "%~dp0\\fake-codex.cjs" %*\r\n`);
+      return codexPath;
+    }
 
     yield* fs.writeFileString(
       codexPath,

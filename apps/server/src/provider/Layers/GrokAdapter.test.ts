@@ -34,8 +34,17 @@ const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.
 const mockAgentCommand = process.execPath;
 
 async function makeMockGrokWrapper(extraEnv?: Record<string, string>) {
+  const isWin = process.platform === "win32";
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-acp-mock-"));
-  const wrapperPath = NodePath.join(dir, "fake-grok.sh");
+  const wrapperPath = NodePath.join(dir, isWin ? "fake-grok.cmd" : "fake-grok.sh");
+  if (isWin) {
+    const envExports = Object.entries(extraEnv ?? {})
+      .map(([key, value]) => `set "${key}=${value}"`)
+      .join("\r\n");
+    const script = `@echo off\r\n${envExports ? `${envExports}\r\n` : ""}"${mockAgentCommand}" "${mockAgentPath}" %*\r\n`;
+    await NodeFSP.writeFile(wrapperPath, script, "utf8");
+    return wrapperPath;
+  }
   const envExports = Object.entries(extraEnv ?? {})
     .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
     .join("\n");

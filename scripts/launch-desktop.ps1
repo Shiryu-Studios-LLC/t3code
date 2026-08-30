@@ -7,10 +7,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$root = $PSScriptRoot
+$root = Split-Path -Parent $PSScriptRoot
 $stateDirectory = Join-Path $root ".t3-launcher"
 $fingerprintPath = Join-Path $stateDirectory "desktop-build.fingerprint"
 $logPath = Join-Path $stateDirectory "build.log"
+$launchOutputPath = Join-Path $stateDirectory "desktop-launch.out.log"
+$launchErrorPath = Join-Path $stateDirectory "desktop-launch.err.log"
 $electronPath = Join-Path $root "apps\desktop\node_modules\electron\dist\electron.exe"
 $desktopDirectory = Join-Path $root "apps\desktop"
 $desktopLauncherPath = Join-Path $desktopDirectory "scripts\start-electron.mjs"
@@ -30,6 +32,42 @@ function Show-LauncherError([string]$Message) {
     ) | Out-Null
 }
 
+function Get-LaunchFailureDetails {
+    $details = @()
+    foreach ($path in @($launchErrorPath, $launchOutputPath)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $tail = Get-Content -LiteralPath $path -Tail 30 -ErrorAction SilentlyContinue
+        if ($null -ne $tail -and $tail.Count -gt 0) {
+            $details += "`n$path`n$($tail -join "`n")"
+        }
+    }
+    return ($details -join "`n")
+}
+
+function Test-T3StudioWindow {
+    $hasProcess = $null -ne (Get-Process -Name electron -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -like "$root*"
+    } | Select-Object -First 1)
+    if (-not $hasProcess) { return $false }
+
+    if (Test-Path -LiteralPath $launchOutputPath -PathType Leaf) {
+        $content = Get-Content -LiteralPath $launchOutputPath -Raw -ErrorAction SilentlyContinue
+        if ($null -ne $content -and $content -match "main window created") {
+            return $true
+        }
+    }
+
+    try {
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:3773/.well-known/t3/environment" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
+        if ($response.StatusCode -eq 200) { return $true }
+    } catch {}
+
+    return $null -ne (Get-Process -Name electron -ErrorAction SilentlyContinue | Where-Object {
+        $_.MainWindowHandle -ne 0 -and
+        $_.Path -like "$root*"
+    } | Select-Object -First 1)
+}
+
 function Get-PnpmPath {
     foreach ($name in @("pnpm.cmd", "pnpm.exe", "pnpm")) {
         $command = Get-Command $name -ErrorAction SilentlyContinue
@@ -44,6 +82,22 @@ function Get-NodePath {
         if ($null -ne $command) { return $command.Source }
     }
     throw "Node.js is not installed or is not available on PATH."
+}
+
+function Import-ProviderEnvironmentVariables {
+    foreach ($name in @(
+        "GEMINI_API_KEY", "GOOGLE_API_KEY",
+        "NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "NVAPI_KEY"
+    )) {
+        $current = [Environment]::GetEnvironmentVariable($name, "Process")
+        if (-not [string]::IsNullOrWhiteSpace($current)) { continue }
+        $userValue = [Environment]::GetEnvironmentVariable($name, "User")
+        $machineValue = [Environment]::GetEnvironmentVariable($name, "Machine")
+        $resolved = if (-not [string]::IsNullOrWhiteSpace($userValue)) { $userValue } else { $machineValue }
+        if (-not [string]::IsNullOrWhiteSpace($resolved)) {
+            [Environment]::SetEnvironmentVariable($name, $resolved, "Process")
+        }
+    }
 }
 
 function Get-DesktopInputFiles {
@@ -70,10 +124,32 @@ function Get-DesktopInputFiles {
 }
 
 function Get-DesktopFingerprint {
-    $lines = Get-DesktopInputFiles | ForEach-Object {
-        $relativePath = $_.FullName.Substring($root.Length).TrimStart("\", "/").ToLowerInvariant()
-        "$relativePath|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)"
-    } | Sort-Object
+    $git = Get-Command git.exe, git -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $git) { throw "Git is not installed or is not available on PATH." }
+
+    $buildPaths = @(
+        "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "tsconfig.base.json",
+        "vite.config.ts", "apps/desktop", "apps/server", "apps/web", "packages", "patches"
+    )
+    Push-Location $root
+    try {
+        $head = (& $git.Source rev-parse HEAD 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "Could not read the T3 Studio Git revision." }
+        $trackedChanges = (& $git.Source diff --no-ext-diff --binary HEAD -- @buildPaths | Out-String)
+        $untrackedPaths = @(& $git.Source ls-files --others --exclude-standard -- @buildPaths)
+    } finally {
+        Pop-Location
+    }
+
+    $lines = @("git-v1", $head, $trackedChanges)
+    foreach ($relativePath in ($untrackedPaths | Sort-Object)) {
+        $candidate = Join-Path $root $relativePath
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $contentHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            $lines += "untracked|$($relativePath.ToLowerInvariant())|$contentHash"
+        }
+    }
+
     $bytes = [System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
@@ -97,6 +173,7 @@ try {
 
     $pnpm = Get-PnpmPath
     $node = Get-NodePath
+    Import-ProviderEnvironmentVariables
     $fingerprint = Get-DesktopFingerprint
     $hasElectron = Test-Path -LiteralPath $electronPath -PathType Leaf
     $hasDesktopBuild = Test-Path -LiteralPath $desktopEntryPath -PathType Leaf
@@ -139,8 +216,13 @@ try {
     New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
     if ($needsDependencies) {
         "[$(Get-Date -Format o)] Installing missing dependencies..." | Set-Content -LiteralPath $logPath
-        & $pnpm install --frozen-lockfile *>> $logPath
-        if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed. See $logPath" }
+        $dependencyErrorPath = Join-Path $stateDirectory "dependencies.err.log"
+        $dependencyProcess = Start-Process -FilePath $pnpm -ArgumentList @("install", "--frozen-lockfile") `
+            -WorkingDirectory $root -WindowStyle Hidden -Wait -PassThru `
+            -RedirectStandardOutput $logPath -RedirectStandardError $dependencyErrorPath
+        if ($dependencyProcess.ExitCode -ne 0) {
+            throw "Dependency installation failed. See $logPath and $dependencyErrorPath"
+        }
     }
 
     if ($needsBuild) {
@@ -149,8 +231,13 @@ try {
             throw "package.json does not define the required build:desktop script. Restore the complete T3 Studio workspace before building."
         }
         "[$(Get-Date -Format o)] Building changed T3 Studio sources..." | Set-Content -LiteralPath $logPath
-        & $pnpm run build:desktop *>> $logPath
-        if ($LASTEXITCODE -ne 0) { throw "The desktop build failed. See $logPath" }
+        $buildErrorPath = Join-Path $stateDirectory "build.err.log"
+        $buildProcess = Start-Process -FilePath $pnpm -ArgumentList @("run", "build:desktop") `
+            -WorkingDirectory $root -WindowStyle Hidden -Wait -PassThru `
+            -RedirectStandardOutput $logPath -RedirectStandardError $buildErrorPath
+        if ($buildProcess.ExitCode -ne 0) {
+            throw "The desktop build failed. See $logPath and $buildErrorPath"
+        }
         if (-not (Test-Path -LiteralPath $desktopEntryPath -PathType Leaf)) {
             throw "The build completed without producing $desktopEntryPath"
         }
@@ -163,10 +250,28 @@ try {
         throw "Electron is missing after dependency installation: $electronPath"
     }
 
-    # The custom Studio branch performs runtime repair and desktop setup in this
-    # wrapper. Launching electron.exe directly can exit before a window appears.
+    # Clean up any stale electron processes from this workspace before launching
+    Get-Process -Name electron -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -like "$root*"
+    } | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+
     Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-    Start-Process -FilePath $node -ArgumentList $desktopLauncherPath -WorkingDirectory $desktopDirectory -WindowStyle Hidden
+    Remove-Item -LiteralPath $launchOutputPath, $launchErrorPath -Force -ErrorAction SilentlyContinue
+
+    $launchProcess = Start-Process -FilePath $node -ArgumentList $desktopLauncherPath `
+        -WorkingDirectory $desktopDirectory -PassThru
+
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-T3StudioWindow) { exit 0 }
+        if ($launchProcess.HasExited) {
+            throw "T3 Studio stopped before its window opened.$(Get-LaunchFailureDetails)"
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    throw "T3 Studio is still running but did not create a visible window within 30 seconds.$(Get-LaunchFailureDetails)"
 } catch {
     Show-LauncherError $_.Exception.Message
     exit 1

@@ -250,6 +250,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/providers",
   },
   {
+    id: "mcp-servers",
+    title: "MCP servers",
+    to: "/settings/integrations",
+    targetId: "mcp",
+  },
+  {
     id: "agent-browser-access",
     title: "Agent browser access",
     to: "/settings/integrations",

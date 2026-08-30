@@ -30,9 +30,17 @@ const GrokTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 function makeAcpGrokWrapper(dir: string, env: Record<string, string>): string {
+  const isWin = process.platform === "win32";
   const binDir = NodePath.join(dir, "bin");
-  const grokPath = NodePath.join(binDir, "grok");
+  const grokPath = NodePath.join(binDir, isWin ? "grok.cmd" : "grok");
   NodeFS.mkdirSync(binDir, { recursive: true });
+  const envPath = NodePath.join(dir, "mock-env.json");
+  NodeFS.writeFileSync(envPath, JSON.stringify(env), "utf8");
+  if (isWin) {
+    const script = `@echo off\r\nnode -e "const env=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));for(const[k,v]of Object.entries(env))process.env[k]=v;require(process.argv[2]);" "${envPath}" "${mockAgentPath}" %*\r\n`;
+    NodeFS.writeFileSync(grokPath, script, "utf8");
+    return grokPath;
+  }
   NodeFS.writeFileSync(
     grokPath,
     [

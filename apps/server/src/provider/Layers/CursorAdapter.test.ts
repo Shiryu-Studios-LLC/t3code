@@ -45,8 +45,17 @@ async function makeMockAgentWrapper(
   extraEnv?: Record<string, string>,
   options?: { initialDelaySeconds?: number },
 ) {
+  const isWin = process.platform === "win32";
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-mock-"));
-  const wrapperPath = NodePath.join(dir, "fake-agent.sh");
+  const wrapperPath = NodePath.join(dir, isWin ? "fake-agent.cmd" : "fake-agent.sh");
+  if (isWin) {
+    const envExports = Object.entries(extraEnv ?? {})
+      .map(([key, value]) => `set "${key}=${value}"`)
+      .join("\r\n");
+    const script = `@echo off\r\n${envExports ? `${envExports}\r\n` : ""}"${mockAgentCommand}" "${mockAgentArgs[0]}" %*\r\n`;
+    await NodeFSP.writeFile(wrapperPath, script, "utf8");
+    return wrapperPath;
+  }
   const envExports = Object.entries(extraEnv ?? {})
     .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
     .join("\n");
@@ -65,8 +74,17 @@ async function makeProbeWrapper(
   argvLogPath: string,
   extraEnv?: Record<string, string>,
 ) {
+  const isWin = process.platform === "win32";
   const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-acp-probe-"));
-  const wrapperPath = NodePath.join(dir, "fake-agent.sh");
+  const wrapperPath = NodePath.join(dir, isWin ? "fake-agent.cmd" : "fake-agent.sh");
+  if (isWin) {
+    const envExports = Object.entries(extraEnv ?? {})
+      .map(([key, value]) => `set "${key}=${value}"`)
+      .join("\r\n");
+    const script = `@echo off\r\nnode -e "require('fs').appendFileSync(process.argv[1], process.argv.slice(2).join('\\t') + '\\n')" "${argvLogPath}" %*\r\nset "T3_ACP_REQUEST_LOG_PATH=${requestLogPath}"\r\n${envExports ? `${envExports}\r\n` : ""}"${mockAgentCommand}" "${mockAgentArgs[0]}" %*\r\n`;
+    await NodeFSP.writeFile(wrapperPath, script, "utf8");
+    return wrapperPath;
+  }
   const envExports = Object.entries(extraEnv ?? {})
     .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
     .join("\n");
@@ -100,7 +118,7 @@ async function readJsonLines(filePath: string) {
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-async function waitForFileContent(filePath: string, attempts = 40) {
+async function waitForFileContent(filePath: string, attempts = 80) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const raw = await NodeFSP.readFile(filePath, "utf8");
@@ -108,7 +126,8 @@ async function waitForFileContent(filePath: string, attempts = 40) {
         return raw;
       }
     } catch {}
-    await Effect.runPromise(Effect.yieldNow);
+    // @effect-diagnostics-next-line globalTimers:off - polling real file I/O; Effect.sleep would use test scheduler
+    await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Timed out waiting for file content at ${filePath}`);
 }

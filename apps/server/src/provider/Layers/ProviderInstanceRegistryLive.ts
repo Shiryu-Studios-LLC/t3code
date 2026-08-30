@@ -147,7 +147,10 @@ const buildEntry = <R>(input: {
     const decodeResult = yield* decoder(entry.config ?? driver.defaultConfig()).pipe(Effect.result);
     if (decodeResult._tag === "Failure") {
       const issue = decodeResult.failure;
-      const detail = issue.message ?? String(issue);
+      const containsSensitiveConfig = entry.driver === "gemini" || entry.driver === "nvidia";
+      const detail = containsSensitiveConfig
+        ? "Provider configuration failed schema validation; sensitive details were redacted."
+        : (issue.message ?? String(issue));
       yield* Effect.logError("Failed to decode provider instance config", {
         instanceId: rawInstanceId,
         driver: entry.driver,

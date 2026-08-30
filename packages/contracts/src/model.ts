@@ -131,6 +131,8 @@ const CODEX_DRIVER_KIND = ProviderDriverKind.make("codex");
 const CLAUDE_DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER_KIND = ProviderDriverKind.make("cursor");
 const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
+const GEMINI_DRIVER_KIND = ProviderDriverKind.make("gemini");
+const NVIDIA_DRIVER_KIND = ProviderDriverKind.make("nvidia");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
 
 export const DEFAULT_MODEL = "gpt-5.6-sol";
@@ -152,6 +154,8 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [CLAUDE_DRIVER_KIND]: "claude-sonnet-5",
   [CURSOR_DRIVER_KIND]: "auto",
   [GROK_DRIVER_KIND]: "grok-build",
+  [GEMINI_DRIVER_KIND]: "gemini-2.5-flash",
+  [NVIDIA_DRIVER_KIND]: "meta/llama-3.3-70b-instruct",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
 };
 
@@ -162,6 +166,9 @@ export const DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [CODEX_DRIVER_KIND]: DEFAULT_TEXT_GENERATION_MODEL,
   [CLAUDE_DRIVER_KIND]: "claude-haiku-4-5",
   [CURSOR_DRIVER_KIND]: "composer-2",
+  [GROK_DRIVER_KIND]: "grok-build",
+  [GEMINI_DRIVER_KIND]: "gemini-2.5-flash",
+  [NVIDIA_DRIVER_KIND]: "meta/llama-3.3-70b-instruct",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
 };
 
@@ -211,6 +218,41 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "opus-4.5-thinking": "claude-opus-4-5",
     "opus-4.5": "claude-opus-4-5",
   },
+  [GROK_DRIVER_KIND]: {
+    "grok-beta": "grok-build",
+    "grok-2": "grok-build",
+  },
+  [GEMINI_DRIVER_KIND]: {
+    flash: "gemini-2.5-flash",
+    "2.5-flash": "gemini-2.5-flash",
+    "gemini-flash": "gemini-2.5-flash",
+    pro: "gemini-2.5-pro",
+    "2.5-pro": "gemini-2.5-pro",
+    "gemini-pro": "gemini-2.5-pro",
+    "flash-lite": "gemini-2.5-flash-lite",
+    "2.5-flash-lite": "gemini-2.5-flash-lite",
+    "3.6-flash": "gemini-3.6-flash",
+    "3.5-flash": "gemini-3.5-flash",
+    "3.1-pro": "gemini-3.1-pro-preview",
+  },
+  [NVIDIA_DRIVER_KIND]: {
+    "llama-3.3-70b": "meta/llama-3.3-70b-instruct",
+    "llama-3.3": "meta/llama-3.3-70b-instruct",
+    "llama-70b": "meta/llama-3.3-70b-instruct",
+    "llama-3.1-405b": "meta/llama-3.1-405b-instruct",
+    nemotron: "nvidia/llama-3.1-nemotron-70b-instruct",
+    "nemotron-70b": "nvidia/llama-3.1-nemotron-70b-instruct",
+    r1: "deepseek-ai/deepseek-r1",
+    "deepseek-r1": "deepseek-ai/deepseek-r1",
+    v3: "deepseek-ai/deepseek-v3",
+    "deepseek-v3": "deepseek-ai/deepseek-v3",
+    qwen: "qwen/qwen2.5-coder-32b-instruct",
+    "qwen-coder": "qwen/qwen2.5-coder-32b-instruct",
+    mistral: "mistralai/mistral-large-2-instruct",
+    "mistral-large": "mistralai/mistral-large-2-instruct",
+    "gpt-oss": "openai/gpt-oss-20b",
+    "gpt-oss-20b": "openai/gpt-oss-20b",
+  },
   [OPENCODE_DRIVER_KIND]: {},
 };
 
@@ -221,5 +263,7 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [CLAUDE_DRIVER_KIND]: "Claude",
   [CURSOR_DRIVER_KIND]: "Cursor",
   [GROK_DRIVER_KIND]: "Grok",
+  [GEMINI_DRIVER_KIND]: "Gemini",
+  [NVIDIA_DRIVER_KIND]: "NVIDIA",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
 };

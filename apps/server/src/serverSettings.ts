@@ -16,6 +16,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
+  type McpServerConfig,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   ProviderDriverKind,
@@ -36,6 +37,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -146,6 +148,149 @@ function redactProviderEnvironmentVariable(
   };
 }
 
+function redactProviderConfig(instance: ProviderInstanceConfig): ProviderInstanceConfig {
+  if (
+    (instance.driver !== ProviderDriverKind.make("gemini") &&
+      instance.driver !== ProviderDriverKind.make("nvidia")) ||
+    !Predicate.isObject(instance.config) ||
+    Array.isArray(instance.config)
+  ) {
+    return instance;
+  }
+  const { apiKey: _apiKey, ...config } = instance.config as Record<string, unknown>;
+  return {
+    ...instance,
+    config: {
+      ...config,
+      apiKey: "",
+      ...(typeof _apiKey === "string" && _apiKey.trim().length > 0 ? { apiKeyRedacted: true } : {}),
+    },
+  };
+}
+
+function redactMcpServer(server: McpServerConfig): McpServerConfig {
+  if (server.transport.type === "http") {
+    return {
+      ...server,
+      transport: {
+        ...server.transport,
+        headers: server.transport.headers.map(({ value, ...header }) => ({
+          ...header,
+          value: "",
+          ...(value.length > 0 ? { valueRedacted: true } : {}),
+        })),
+      },
+    };
+  }
+  return {
+    ...server,
+    transport: {
+      ...server.transport,
+      environment: server.transport.environment.map(({ value, ...variable }) => ({
+        ...variable,
+        value: "",
+        ...(value.length > 0 ? { valueRedacted: true } : {}),
+      })),
+    },
+  };
+}
+
+function restoreRedactedMcpServer(
+  current: McpServerConfig | undefined,
+  next: McpServerConfig,
+): McpServerConfig {
+  if (!current || current.transport.type !== next.transport.type) return next;
+  if (next.transport.type === "http" && current.transport.type === "http") {
+    const currentHeaders = new Map(
+      current.transport.headers.map((header) => [header.name, header]),
+    );
+    return {
+      ...next,
+      transport: {
+        ...next.transport,
+        headers: next.transport.headers.map(({ valueRedacted, ...header }) => ({
+          ...header,
+          value:
+            valueRedacted === true && header.value.length === 0
+              ? (currentHeaders.get(header.name)?.value ?? "")
+              : header.value,
+        })),
+      },
+    };
+  }
+  if (next.transport.type === "stdio" && current.transport.type === "stdio") {
+    const currentEnvironment = new Map(
+      current.transport.environment.map((variable) => [variable.name, variable]),
+    );
+    return {
+      ...next,
+      transport: {
+        ...next.transport,
+        environment: next.transport.environment.map(({ valueRedacted, ...variable }) => ({
+          ...variable,
+          value:
+            valueRedacted === true && variable.value.length === 0
+              ? (currentEnvironment.get(variable.name)?.value ?? "")
+              : variable.value,
+        })),
+      },
+    };
+  }
+  return next;
+}
+
+export function restoreRedactedProviderConfigSecrets(
+  current: ServerSettings,
+  next: ServerSettings,
+): ServerSettings {
+  const currentProviderInstances: Readonly<Record<string, ProviderInstanceConfig>> =
+    current.providerInstances;
+  const providerInstances = Object.fromEntries(
+    Object.entries(next.providerInstances).map(([instanceId, instance]) => {
+      if (
+        (instance.driver !== ProviderDriverKind.make("gemini") &&
+          instance.driver !== ProviderDriverKind.make("nvidia")) ||
+        !Predicate.isObject(instance.config) ||
+        Array.isArray(instance.config)
+      ) {
+        return [instanceId, instance];
+      }
+
+      const { apiKeyRedacted, apiKey, ...config } = instance.config as Record<string, unknown>;
+      if (apiKeyRedacted !== true) return [instanceId, instance];
+
+      const currentConfig = currentProviderInstances[instanceId]?.config;
+      const currentApiKey =
+        Predicate.isObject(currentConfig) && !Array.isArray(currentConfig)
+          ? (currentConfig as Record<string, unknown>).apiKey
+          : undefined;
+      const resolvedApiKey =
+        typeof apiKey === "string" && apiKey.trim().length > 0 ? apiKey : currentApiKey;
+
+      return [
+        instanceId,
+        {
+          ...instance,
+          config: {
+            ...config,
+            ...(typeof resolvedApiKey === "string" && resolvedApiKey.trim().length > 0
+              ? { apiKey: resolvedApiKey }
+              : {}),
+          },
+        },
+      ];
+    }),
+  );
+  const currentMcpServers = new Map(current.mcpServers.map((server) => [server.id, server]));
+  return {
+    ...next,
+    providerInstances,
+    mcpServers: next.mcpServers.map((server) =>
+      restoreRedactedMcpServer(currentMcpServers.get(server.id), server),
+    ),
+  };
+}
+
 export function redactServerSettingsForClient(settings: ServerSettings): ServerSettings {
   const providerInstances = Object.fromEntries(
     Object.entries(settings.providerInstances).map(([instanceId, instance]) => [
@@ -158,7 +303,16 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
         : instance,
     ]),
   );
-  return { ...settings, providerInstances };
+  return {
+    ...settings,
+    mcpServers: settings.mcpServers.map(redactMcpServer),
+    providerInstances: Object.fromEntries(
+      Object.entries(providerInstances).map(([instanceId, instance]) => [
+        instanceId,
+        redactProviderConfig(instance),
+      ]),
+    ),
+  };
 }
 
 export class ServerSettingsService extends Context.Service<
@@ -215,7 +369,12 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
       getSettings: Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider)),
       updateSettings: (patch) =>
         Ref.get(currentSettingsRef).pipe(
-          Effect.map((currentSettings) => applyServerSettingsPatch(currentSettings, patch)),
+          Effect.map((currentSettings) =>
+            restoreRedactedProviderConfigSecrets(
+              currentSettings,
+              applyServerSettingsPatch(currentSettings, patch),
+            ),
+          ),
           Effect.flatMap(normalizeServerSettings),
           Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
           Effect.map(resolveTextGenerationProvider),
@@ -628,10 +787,11 @@ const make = Effect.gen(function* () {
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const current = yield* getSettingsFromCache;
-          const nextPersisted = yield* persistProviderEnvironmentSecrets(
+          const patched = restoreRedactedProviderConfigSecrets(
             current,
             applyServerSettingsPatch(current, patch),
           );
+          const nextPersisted = yield* persistProviderEnvironmentSecrets(current, patched);
           const next = yield* normalizeServerSettings(nextPersisted);
           yield* writeSettingsAtomically(next);
           yield* Cache.set(settingsCache, cacheKey, next);

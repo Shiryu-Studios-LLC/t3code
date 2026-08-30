@@ -7,7 +7,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { type CursorSettings, type ModelSelection } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import { extractJsonObject } from "@t3tools/shared/schemaJson";
+import { extractJsonObject, fromLenientJson } from "@t3tools/shared/schemaJson";
 
 import { TextGenerationError } from "@t3tools/contracts";
 import * as TextGeneration from "./TextGeneration.ts";
@@ -139,18 +139,16 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
         });
       }
 
-      const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
+      const decodeOutput = Schema.decodeEffect(fromLenientJson(outputSchemaJson));
       return yield* decodeOutput(extractJsonObject(rawResult)).pipe(
-        Effect.catchTags({
-          SchemaError: (cause) =>
-            Effect.fail(
-              new TextGenerationError({
-                operation,
-                detail: "Cursor Agent returned invalid structured output.",
-                cause,
-              }),
-            ),
-        }),
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: "Cursor Agent returned invalid structured output.",
+              cause,
+            }),
+        ),
       );
     }).pipe(
       Effect.mapError((cause) =>

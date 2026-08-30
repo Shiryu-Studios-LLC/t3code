@@ -34,6 +34,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { externalMcpServersForAcp } from "../../mcp/ExternalMcpProviderConfig.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterProcessError,
@@ -570,6 +571,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           });
 
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          const externalMcpServers = externalMcpServersForAcp(input.threadId);
           const acp = yield* makeGrokAcpRuntime({
             grokSettings,
             ...(options?.environment ? { environment: options.environment } : {}),
@@ -577,20 +579,25 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
-            ...(mcpSession
+            ...(mcpSession || externalMcpServers.length > 0
               ? {
                   mcpServers: [
-                    {
-                      type: "http" as const,
-                      name: "t3-code",
-                      url: mcpSession.endpoint,
-                      headers: [
-                        {
-                          name: "Authorization",
-                          value: mcpSession.authorizationHeader,
-                        },
-                      ],
-                    },
+                    ...(mcpSession
+                      ? [
+                          {
+                            type: "http" as const,
+                            name: "t3-code",
+                            url: mcpSession.endpoint,
+                            headers: [
+                              {
+                                name: "Authorization",
+                                value: mcpSession.authorizationHeader,
+                              },
+                            ],
+                          },
+                        ]
+                      : []),
+                    ...externalMcpServers,
                   ],
                 }
               : {}),

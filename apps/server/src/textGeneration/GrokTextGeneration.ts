@@ -8,7 +8,7 @@ import type * as EffectAcpErrors from "effect-acp/errors";
 
 import { type GrokSettings, type ModelSelection } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import { extractJsonObject } from "@t3tools/shared/schemaJson";
+import { extractJsonObject, fromLenientJson } from "@t3tools/shared/schemaJson";
 
 import { TextGenerationError } from "@t3tools/contracts";
 import * as TextGeneration from "./TextGeneration.ts";
@@ -131,18 +131,16 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         });
       }
 
-      const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
+      const decodeOutput = Schema.decodeEffect(fromLenientJson(outputSchemaJson));
       return yield* decodeOutput(extractJsonObject(trimmed)).pipe(
-        Effect.catchTags({
-          SchemaError: (cause) =>
-            Effect.fail(
-              new TextGenerationError({
-                operation,
-                detail: "Grok Agent returned invalid structured output.",
-                cause,
-              }),
-            ),
-        }),
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: "Grok Agent returned invalid structured output.",
+              cause,
+            }),
+        ),
       );
     }).pipe(
       Effect.mapError((cause) =>

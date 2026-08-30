@@ -555,6 +555,112 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
 );
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
+export const GeminiSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    apiKey: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "API Key",
+        description: "Google AI Studio API key (or GEMINI_API_KEY environment variable).",
+        providerSettingsForm: {
+          control: "password",
+          placeholder: "AIzaSy...",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    binaryPath: makeBinaryPathSetting("gemini").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to optional Gemini CLI binary.",
+        providerSettingsForm: { placeholder: "gemini", clearWhenEmpty: "omit" },
+      }),
+    ),
+    apiEndpoint: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "API Endpoint",
+        description: "Custom endpoint or Vertex AI base URL.",
+        providerSettingsForm: {
+          placeholder: "https://generativelanguage.googleapis.com",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    launchArgs: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Launch arguments",
+        description: "Additional arguments passed on session start.",
+        providerSettingsForm: { placeholder: "Optional", clearWhenEmpty: "omit" },
+      }),
+    ),
+  },
+  { order: ["apiKey", "binaryPath", "apiEndpoint", "launchArgs"] },
+);
+export type GeminiSettings = typeof GeminiSettings.Type;
+
+export const NvidiaSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    apiKey: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "API Key",
+        description: "NVIDIA Build / NIM API key (or NVIDIA_API_KEY environment variable).",
+        providerSettingsForm: {
+          control: "password",
+          placeholder: "nvapi-...",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    apiEndpoint: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("https://integrate.api.nvidia.com/v1")),
+      Schema.annotateKey({
+        title: "API Endpoint",
+        description: "NVIDIA NIM or OpenAI-compatible endpoint.",
+        providerSettingsForm: {
+          placeholder: "https://integrate.api.nvidia.com/v1",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    binaryPath: makeBinaryPathSetting("nvidia").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to optional NVIDIA agent binary.",
+        providerSettingsForm: { placeholder: "nvidia", clearWhenEmpty: "omit" },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    launchArgs: Schema.String.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Launch arguments",
+        description: "Additional CLI arguments passed on session start.",
+        providerSettingsForm: { placeholder: "Optional", clearWhenEmpty: "omit" },
+      }),
+    ),
+  },
+  { order: ["apiKey", "apiEndpoint", "binaryPath", "launchArgs"] },
+);
+export type NvidiaSettings = typeof NvidiaSettings.Type;
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -635,6 +741,48 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
+export const McpServerHeader = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  value: Schema.String,
+  valueRedacted: Schema.optionalKey(Schema.Boolean),
+});
+export type McpServerHeader = typeof McpServerHeader.Type;
+
+export const McpServerEnvironmentVariable = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  value: Schema.String,
+  valueRedacted: Schema.optionalKey(Schema.Boolean),
+});
+export type McpServerEnvironmentVariable = typeof McpServerEnvironmentVariable.Type;
+
+export const McpHttpTransport = Schema.Struct({
+  type: Schema.Literal("http"),
+  url: TrimmedNonEmptyString,
+  headers: Schema.Array(McpServerHeader).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+});
+export type McpHttpTransport = typeof McpHttpTransport.Type;
+
+export const McpStdioTransport = Schema.Struct({
+  type: Schema.Literal("stdio"),
+  command: TrimmedNonEmptyString,
+  args: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  environment: Schema.Array(McpServerEnvironmentVariable).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+});
+export type McpStdioTransport = typeof McpStdioTransport.Type;
+
+export const McpServerTransport = Schema.Union([McpHttpTransport, McpStdioTransport]);
+export type McpServerTransport = typeof McpServerTransport.Type;
+
+export const McpServerConfig = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  transport: McpServerTransport,
+});
+export type McpServerConfig = typeof McpServerConfig.Type;
+
 export const ServerSettings = Schema.Struct({
   // Legacy token-by-token assistant output. Deliberately a fresh key (was
   // `enableAssistantStreaming`): decoding drops the old key, so everyone,
@@ -655,6 +803,8 @@ export const ServerSettings = Schema.Struct({
    * between a desktop window and a phone attached to the same server.
    */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** User-managed MCP servers exposed to every provider runtime that supports tools. */
+  mcpServers: Schema.Array(McpServerConfig).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   /**
    * Controls whether capable providers may fan one user turn out to native
    * child/subagents and then consolidate their results back into the lead
@@ -875,6 +1025,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableLegacyTokenStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+  mcpServers: Schema.optionalKey(Schema.Array(McpServerConfig)),
   agentTeamMode: Schema.optionalKey(AgentTeamMode),
   agentTeamMaxConcurrency: Schema.optionalKey(AgentTeamMaxConcurrency),
   backgroundActivity: Schema.optionalKey(

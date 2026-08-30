@@ -19,15 +19,18 @@ import {
   PREVIEW_ZOOM_LEVELS,
   type PreviewAppearancePreference,
   type PreviewViewportSetting,
+  type McpServerConfig,
 } from "@t3tools/contracts";
 import { PREVIEW_VIEWPORT_PRESETS } from "@t3tools/shared/previewViewport";
-import { InfoIcon } from "lucide-react";
+import { InfoIcon, PlusIcon, ServerIcon, Trash2Icon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { ScreenRotationIcon } from "~/browser/ScreenRotationIcon";
 import { isElectron } from "../../env";
 
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
 import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-field";
 import {
   Select,
@@ -453,6 +456,310 @@ function DesktopOnlyBrowserDefaults({ children }: { readonly children: ReactNode
   );
 }
 
+function McpServersSetting() {
+  const settings = usePrimarySettings();
+  const updateSettings = useUpdatePrimarySettings();
+  const servers = settings.mcpServers;
+
+  const replaceServer = (id: string, update: (server: McpServerConfig) => McpServerConfig) =>
+    updateSettings({
+      mcpServers: servers.map((server) => (server.id === id ? update(server) : server)),
+    });
+
+  const addServer = () => {
+    let suffix = servers.length + 1;
+    while (servers.some((server) => server.id === `mcp-server-${suffix}`)) suffix += 1;
+    const id = `mcp-server-${suffix}`;
+    updateSettings({
+      mcpServers: [
+        ...servers,
+        {
+          id,
+          name: "New MCP server",
+          enabled: true,
+          transport: { type: "http", url: "http://127.0.0.1:3000/mcp", headers: [] },
+        },
+      ],
+    });
+  };
+
+  return (
+    <SettingsRow
+      id="mcp-servers"
+      title="MCP servers"
+      description="Connect shared tool servers once. T3 Studio makes their tools available to every supported agent and direct model session. Changes apply to newly started sessions."
+      control={
+        <Button size="sm" variant="outline" onClick={addServer}>
+          <PlusIcon /> Add server
+        </Button>
+      }
+    >
+      <div className="space-y-3 pb-3 pt-2">
+        {servers.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border/70 px-4 py-6 text-center text-sm text-muted-foreground">
+            No external MCP servers are connected.
+          </div>
+        ) : null}
+        {servers.map((server) => (
+          <div
+            key={server.id}
+            className="rounded-xl border border-border/60 bg-muted/15 p-3 sm:p-4"
+          >
+            <div className="flex items-center gap-2">
+              <ServerIcon className="size-4 text-muted-foreground" />
+              <Input
+                aria-label="MCP server name"
+                defaultValue={server.name}
+                onBlur={(event) => {
+                  const name = event.currentTarget.value.trim();
+                  if (name && name !== server.name)
+                    replaceServer(server.id, (value) => ({ ...value, name }));
+                }}
+              />
+              <Switch
+                checked={server.enabled}
+                onCheckedChange={(enabled) =>
+                  replaceServer(server.id, (value) => ({ ...value, enabled: Boolean(enabled) }))
+                }
+                aria-label={`Enable ${server.name}`}
+              />
+              <Button
+                size="icon-sm"
+                variant="ghost-muted"
+                aria-label={`Remove ${server.name}`}
+                onClick={() =>
+                  updateSettings({ mcpServers: servers.filter((value) => value.id !== server.id) })
+                }
+              >
+                <Trash2Icon />
+              </Button>
+            </div>
+
+            <div className="mt-3 grid gap-3 sm:grid-cols-[10rem_minmax(0,1fr)]">
+              <Select
+                value={server.transport.type}
+                onValueChange={(type) => {
+                  if (type === server.transport.type) return;
+                  replaceServer(server.id, (value) => ({
+                    ...value,
+                    transport:
+                      type === "stdio"
+                        ? { type: "stdio", command: "npx", args: [], environment: [] }
+                        : { type: "http", url: "http://127.0.0.1:3000/mcp", headers: [] },
+                  }));
+                }}
+              >
+                <SelectTrigger aria-label="MCP transport">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectPopup>
+                  <SelectItem value="http">Remote HTTP</SelectItem>
+                  <SelectItem value="stdio">Local command</SelectItem>
+                </SelectPopup>
+              </Select>
+
+              {server.transport.type === "http" ? (
+                <Input
+                  aria-label="MCP server URL"
+                  defaultValue={server.transport.url}
+                  placeholder="https://example.com/mcp"
+                  onBlur={(event) => {
+                    const url = event.currentTarget.value.trim();
+                    if (url)
+                      replaceServer(server.id, (value) =>
+                        value.transport.type === "http"
+                          ? { ...value, transport: { ...value.transport, url } }
+                          : value,
+                      );
+                  }}
+                />
+              ) : (
+                <Input
+                  aria-label="MCP server command"
+                  defaultValue={server.transport.command}
+                  placeholder="npx"
+                  onBlur={(event) => {
+                    const command = event.currentTarget.value.trim();
+                    if (command)
+                      replaceServer(server.id, (value) =>
+                        value.transport.type === "stdio"
+                          ? { ...value, transport: { ...value.transport, command } }
+                          : value,
+                      );
+                  }}
+                />
+              )}
+            </div>
+
+            {server.transport.type === "stdio" ? (
+              <div className="mt-3">
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  Arguments — one per line
+                </label>
+                <Textarea
+                  defaultValue={server.transport.args.join("\n")}
+                  rows={3}
+                  onBlur={(event) => {
+                    const args = event.currentTarget.value
+                      .split(/\r?\n/)
+                      .map((value) => value.trim())
+                      .filter(Boolean);
+                    replaceServer(server.id, (value) =>
+                      value.transport.type === "stdio"
+                        ? { ...value, transport: { ...value.transport, args } }
+                        : value,
+                    );
+                  }}
+                />
+              </div>
+            ) : null}
+
+            <div className="mt-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {server.transport.type === "http" ? "Request headers" : "Environment variables"}
+                </span>
+                <Button
+                  size="xs"
+                  variant="ghost-muted"
+                  onClick={() =>
+                    replaceServer(server.id, (value) =>
+                      value.transport.type === "http"
+                        ? {
+                            ...value,
+                            transport: {
+                              ...value.transport,
+                              headers: [
+                                ...value.transport.headers,
+                                { name: "Authorization", value: "" },
+                              ],
+                            },
+                          }
+                        : {
+                            ...value,
+                            transport: {
+                              ...value.transport,
+                              environment: [
+                                ...value.transport.environment,
+                                { name: "API_KEY", value: "" },
+                              ],
+                            },
+                          },
+                    )
+                  }
+                >
+                  <PlusIcon /> Add
+                </Button>
+              </div>
+              {(server.transport.type === "http"
+                ? server.transport.headers
+                : server.transport.environment
+              ).map((entry, index) => (
+                <div
+                  key={`${entry.name}-${index}`}
+                  className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_2rem] gap-2"
+                >
+                  <Input
+                    aria-label="Name"
+                    defaultValue={entry.name}
+                    placeholder="Name"
+                    onBlur={(event) => {
+                      const name = event.currentTarget.value.trim();
+                      if (!name) return;
+                      replaceServer(server.id, (value) => {
+                        if (value.transport.type === "http")
+                          return {
+                            ...value,
+                            transport: {
+                              ...value.transport,
+                              headers: value.transport.headers.map((item, itemIndex) =>
+                                itemIndex === index ? { ...item, name } : item,
+                              ),
+                            },
+                          };
+                        return {
+                          ...value,
+                          transport: {
+                            ...value.transport,
+                            environment: value.transport.environment.map((item, itemIndex) =>
+                              itemIndex === index ? { ...item, name } : item,
+                            ),
+                          },
+                        };
+                      });
+                    }}
+                  />
+                  <Input
+                    type="password"
+                    aria-label="Value"
+                    defaultValue=""
+                    placeholder={entry.valueRedacted ? "Saved" : "Value"}
+                    onBlur={(event) => {
+                      const valueText = event.currentTarget.value;
+                      if (!valueText) return;
+                      replaceServer(server.id, (value) => {
+                        if (value.transport.type === "http")
+                          return {
+                            ...value,
+                            transport: {
+                              ...value.transport,
+                              headers: value.transport.headers.map((item, itemIndex) =>
+                                itemIndex === index ? { name: item.name, value: valueText } : item,
+                              ),
+                            },
+                          };
+                        return {
+                          ...value,
+                          transport: {
+                            ...value.transport,
+                            environment: value.transport.environment.map((item, itemIndex) =>
+                              itemIndex === index ? { name: item.name, value: valueText } : item,
+                            ),
+                          },
+                        };
+                      });
+                    }}
+                  />
+                  <Button
+                    size="icon-sm"
+                    variant="ghost-muted"
+                    aria-label="Remove value"
+                    onClick={() =>
+                      replaceServer(server.id, (value) =>
+                        value.transport.type === "http"
+                          ? {
+                              ...value,
+                              transport: {
+                                ...value.transport,
+                                headers: value.transport.headers.filter(
+                                  (_, itemIndex) => itemIndex !== index,
+                                ),
+                              },
+                            }
+                          : {
+                              ...value,
+                              transport: {
+                                ...value.transport,
+                                environment: value.transport.environment.filter(
+                                  (_, itemIndex) => itemIndex !== index,
+                                ),
+                              },
+                            },
+                      )
+                    }
+                  >
+                    <Trash2Icon />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </SettingsRow>
+  );
+}
+
 export function IntegrationsSettingsPanel() {
   // Client-local preview defaults are editable only where the preview exists.
   const previewDefaultsDisabled = !isElectron;
@@ -467,6 +774,9 @@ export function IntegrationsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsSection id="mcp" title="Model Context Protocol">
+        <McpServersSetting />
+      </SettingsSection>
       <SettingsSection id="browser" title="Browser">
         {/* Server-authoritative, so it stays editable on every client and sits
             outside the block covering the desktop-only defaults. */}

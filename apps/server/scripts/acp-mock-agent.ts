@@ -13,6 +13,32 @@ import type * as AcpSchema from "effect-acp/schema";
 
 const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
 const exitLogPath = process.env.T3_ACP_EXIT_LOG_PATH;
+if (exitLogPath) {
+  const writeExit = (signal: string) => {
+    try {
+      NodeFS.appendFileSync(exitLogPath, `${signal}\n`, "utf8");
+    } catch {}
+  };
+  process.on("SIGTERM", () => {
+    writeExit("SIGTERM");
+    process.exit(0);
+  });
+  process.on("SIGINT", () => {
+    writeExit("SIGINT");
+    process.exit(0);
+  });
+  process.on("exit", () => {
+    writeExit("EXIT");
+  });
+  process.stdin.on("end", () => {
+    writeExit("EXIT");
+    process.exit(0);
+  });
+  process.stdin.on("close", () => {
+    writeExit("EXIT");
+    process.exit(0);
+  });
+}
 const emitToolCalls = process.env.T3_ACP_EMIT_TOOL_CALLS === "1";
 const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";

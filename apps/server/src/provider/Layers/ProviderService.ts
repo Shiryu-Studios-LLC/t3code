@@ -59,6 +59,7 @@ import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
+import * as ExternalMcpProviderSession from "../../mcp/ExternalMcpProviderSession.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
@@ -264,6 +265,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
+      const externalServers = yield* serverSettings.getSettings.pipe(
+        Effect.map((settings) => settings.mcpServers),
+        Effect.catch((cause) =>
+          Effect.logWarning(
+            "Could not read server settings; withholding external MCP servers for this session.",
+            { cause },
+          ).pipe(Effect.as([])),
+        ),
+      );
+      yield* Effect.sync(() =>
+        ExternalMcpProviderSession.setExternalMcpProviderServers(threadId, externalServers),
+      );
       if (!(yield* agentBrowserAccessEnabled)) {
         // Revoke as well as clear. Every other prepare path reaches
         // `issueActiveMcpCredential`, which revokes the thread first, so
@@ -283,7 +296,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     });
   const clearMcpSession = (threadId: ThreadId) =>
     McpSessionRegistry.revokeActiveMcpThread(threadId).pipe(
-      Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          McpProviderSession.clearMcpProviderSession(threadId);
+          ExternalMcpProviderSession.clearExternalMcpProviderServers(threadId);
+        }),
+      ),
     );
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
