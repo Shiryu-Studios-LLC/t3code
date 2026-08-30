@@ -1127,7 +1127,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
-      return workspaceEntries.entries.map((entry) => ({
+      const pathItems: ComposerCommandItem[] = workspaceEntries.entries.map((entry) => ({
         id: `path:${entry.kind}:${entry.path}`,
         type: "path",
         path: entry.path,
@@ -1135,6 +1135,52 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         label: basenameOfPath(entry.path),
         description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
       }));
+
+      const matchingSkills = searchProviderSkills(
+        selectedProviderStatus?.skills ?? [],
+        composerTrigger.query,
+      );
+
+      const skillItems: ComposerCommandItem[] = matchingSkills.map((skill) => ({
+        id: `skill:${selectedProvider}:${skill.name}`,
+        type: "skill" as const,
+        provider: selectedProvider,
+        skill,
+        label: `@${formatProviderSkillDisplayName(skill)}`,
+        description:
+          skill.shortDescription ??
+          skill.description ??
+          (skill.scope ? `${skill.scope} skill` : "Plugin / Skill capability"),
+      }));
+
+      const normalizedQuery = composerTrigger.query.trim().toLowerCase();
+      const devspaceMatches =
+        normalizedQuery === "" ||
+        "devspace".includes(normalizedQuery) ||
+        "workspace".includes(normalizedQuery) ||
+        "cloud".includes(normalizedQuery);
+
+      const devspaceItem: ComposerCommandItem[] = devspaceMatches
+        ? [
+            {
+              id: `skill:${selectedProvider}:devspace`,
+              type: "skill" as const,
+              provider: selectedProvider,
+              skill: {
+                name: "devspace",
+                path: "devspace",
+                description: "DevSpace cloud workspace and container runtime context",
+                shortDescription: "DevSpace cloud workspace & tools",
+                scope: "app" as const,
+                enabled: true,
+              },
+              label: "@devspace",
+              description: "Target DevSpace workspace environment & cloud runtime",
+            },
+          ]
+        : [];
+
+      return [...devspaceItem, ...skillItems, ...pathItems];
     }
     if (composerTrigger.kind === "slash-command") {
       const builtInSlashCommandItems = [
@@ -1861,7 +1907,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
       if (item.type === "skill") {
-        const replacement = `$${item.skill.name} `;
+        const isMentionTrigger = trigger.kind === "path";
+        const replacement = isMentionTrigger ? `@${item.skill.name} ` : `$${item.skill.name} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
           trigger.rangeEnd,

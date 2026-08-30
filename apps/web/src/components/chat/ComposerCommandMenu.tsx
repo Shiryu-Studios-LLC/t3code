@@ -182,7 +182,12 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         <span className="min-w-0 max-w-[48ch] flex-1 truncate text-left text-secondary-label text-xs">
           {props.item.description}
         </span>
-        {skillSourceKind ? (
+        {props.item.type === "skill" && props.item.skill.name === "devspace" ? (
+          <Badge className="ms-auto" variant="secondary">
+            <BlocksIcon aria-hidden="true" className="text-current" />
+            DevSpace
+          </Badge>
+        ) : skillSourceKind ? (
           <SkillSourceBadge
             kind={skillSourceKind}
             showSkillSuffix={props.triggerKind === "skill"}
