@@ -280,11 +280,62 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
       }
     }, 1000);
 
+    let broadcastChannel: BroadcastChannel | null = null;
+    try {
+      broadcastChannel = new BroadcastChannel("t3-mcp-oauth");
+      broadcastChannel.onmessage = (event) => {
+        const data = event.data as {
+          type?: string;
+          code?: string;
+          state?: string;
+          error?: string;
+        } | null;
+        if (!data || data.type !== "t3-mcp-oauth-callback") return;
+        if (data.error) {
+          cleanup();
+          reject(new Error(`OAuth Authorization Error: ${data.error}`));
+          return;
+        }
+        if (data.code && (!data.state || data.state === state)) {
+          cleanup();
+          resolve(data.code);
+        }
+      };
+    } catch {}
+
+    const storageHandler = (event: StorageEvent) => {
+      if (event.key === "t3-mcp-oauth-callback" && event.newValue) {
+        try {
+          const data = JSON.parse(event.newValue) as {
+            code?: string;
+            state?: string;
+            error?: string;
+          };
+          if (data.error) {
+            cleanup();
+            reject(new Error(`OAuth Authorization Error: ${data.error}`));
+            return;
+          }
+          if (data.code && (!data.state || data.state === state)) {
+            cleanup();
+            resolve(data.code);
+          }
+        } catch {}
+      }
+    };
+    window.addEventListener("storage", storageHandler);
+
     cleanup = () => {
       clearTimeout(timer);
       clearInterval(pollClosed);
       clearInterval(pollServer);
       window.removeEventListener("message", messageHandler);
+      window.removeEventListener("storage", storageHandler);
+      if (broadcastChannel) {
+        try {
+          broadcastChannel.close();
+        } catch {}
+      }
     };
 
     window.addEventListener("message", messageHandler);

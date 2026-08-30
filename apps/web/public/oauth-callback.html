@@ -96,18 +96,30 @@
           const codeContainerEl = document.getElementById("code-container");
           const codeValEl = document.getElementById("code-val");
 
-          // Report to local server callback endpoint
+          // Report to local server callback endpoint, BroadcastChannel, and localStorage
           if (state) {
+            const payload = {
+              type: "t3-mcp-oauth-callback",
+              state,
+              code: code || undefined,
+              error: error_description || error || undefined,
+            };
+
             try {
               fetch("/api/mcp/oauth/callback", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  state,
-                  code: code || undefined,
-                  error: error_description || error || undefined,
-                }),
+                body: JSON.stringify(payload),
               }).catch(() => {});
+            } catch {}
+
+            try {
+              const channel = new BroadcastChannel("t3-mcp-oauth");
+              channel.postMessage(payload);
+            } catch {}
+
+            try {
+              localStorage.setItem("t3-mcp-oauth-callback", JSON.stringify(payload));
             } catch {}
           }
 

@@ -358,7 +358,23 @@ interface PendingMcpOAuthEntry {
 }
 const pendingMcpOAuth = new Map<string, PendingMcpOAuthEntry>();
 
+const OAUTH_CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "*",
+};
+
 export const mcpOAuthCallbackRouteLayer = Layer.mergeAll(
+  HttpRouter.add(
+    "OPTIONS",
+    "/api/mcp/oauth/callback",
+    Effect.succeed(
+      HttpServerResponse.empty({
+        status: 204,
+        headers: OAUTH_CORS_HEADERS,
+      }),
+    ),
+  ),
   HttpRouter.add(
     "POST",
     "/api/mcp/oauth/callback",
@@ -375,7 +391,7 @@ export const mcpOAuthCallbackRouteLayer = Layer.mergeAll(
           timestamp: Date.now(),
         });
       }
-      return HttpServerResponse.json({ ok: true });
+      return HttpServerResponse.json({ ok: true }, { headers: OAUTH_CORS_HEADERS });
     }),
   ),
   HttpRouter.add(
@@ -385,19 +401,22 @@ export const mcpOAuthCallbackRouteLayer = Layer.mergeAll(
       const request = yield* HttpServerRequest.HttpServerRequest;
       const url = HttpServerRequest.toURL(request);
       if (Option.isNone(url)) {
-        return HttpServerResponse.json({ found: false });
+        return HttpServerResponse.json({ found: false }, { headers: OAUTH_CORS_HEADERS });
       }
       const state = url.value.searchParams.get("state");
       if (!state || !pendingMcpOAuth.has(state)) {
-        return HttpServerResponse.json({ found: false });
+        return HttpServerResponse.json({ found: false }, { headers: OAUTH_CORS_HEADERS });
       }
       const entry = pendingMcpOAuth.get(state)!;
       pendingMcpOAuth.delete(state);
-      return HttpServerResponse.json({
-        found: true,
-        code: entry.code,
-        error: entry.error,
-      });
+      return HttpServerResponse.json(
+        {
+          found: true,
+          code: entry.code,
+          error: entry.error,
+        },
+        { headers: OAUTH_CORS_HEADERS },
+      );
     }),
   ),
 );
