@@ -6482,29 +6482,6 @@ function ChatViewContent(props: ChatViewProps) {
       // Look up the configured instance so model normalization and custom
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
-      const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-      const resolvedDriverKind = entry?.driver ?? null;
-      if (
-        lockedProvider !== null &&
-        resolvedDriverKind !== null &&
-        resolvedDriverKind !== lockedProvider
-      ) {
-        scheduleComposerFocus();
-        return;
-      }
-      if (lockedProvider !== null && activeThread.session?.providerInstanceId) {
-        const currentEntry = providerStatuses.find(
-          (snapshot) => snapshot.instanceId === activeThread.session?.providerInstanceId,
-        );
-        if (
-          currentEntry?.continuation?.groupKey &&
-          entry?.continuation?.groupKey &&
-          currentEntry.continuation.groupKey !== entry.continuation.groupKey
-        ) {
-          scheduleComposerFocus();
-          return;
-        }
-      }
       const resolvedModel = resolveAppModelSelectionForInstance(
         instanceId,
         settings,

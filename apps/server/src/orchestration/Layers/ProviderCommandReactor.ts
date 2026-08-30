@@ -482,36 +482,13 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
-  const rejectStartedThreadModelChangeIfRequired = Effect.fnUntraced(function* (input: {
+  const rejectStartedThreadModelChangeIfRequired = Effect.fnUntraced(function* (_input: {
     readonly threadId: ThreadId;
     readonly currentModelSelection: ModelSelection;
     readonly requestedModelSelection: ModelSelection | undefined;
   }) {
-    const requestedModelSelection = input.requestedModelSelection;
-    if (
-      requestedModelSelection === undefined ||
-      (input.currentModelSelection.instanceId === requestedModelSelection.instanceId &&
-        input.currentModelSelection.model === requestedModelSelection.model)
-    ) {
-      return;
-    }
-    const providers = yield* providerRegistry.getProviders;
-    const requiresNewThread =
-      providers.find((snapshot) => snapshot.instanceId === input.currentModelSelection.instanceId)
-        ?.requiresNewThreadForModelChange === true ||
-      providers.find((snapshot) => snapshot.instanceId === requestedModelSelection.instanceId)
-        ?.requiresNewThreadForModelChange === true;
-    if (!requiresNewThread) {
-      return;
-    }
-    return yield* new ProviderAdapterRequestError({
-      provider: providerErrorLabelFromInstanceHint({
-        instanceId: String(requestedModelSelection.instanceId),
-        modelSelectionInstanceId: String(input.currentModelSelection.instanceId),
-      }),
-      method: "thread.turn.start",
-      detail: `Thread '${input.threadId}' cannot switch models after the conversation has started. Start a new thread to use '${requestedModelSelection.model}'.`,
-    });
+    // Cross-provider and cross-model switching mid-thread is supported.
+    return;
   });
 
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
@@ -624,29 +601,6 @@ const make = Effect.gen(function* () {
         requestedModelSelection,
       });
     }
-    if (
-      thread.session !== null &&
-      requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId
-    ) {
-      if (currentInfo.driverKind !== desiredInfo.driverKind) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' is bound to driver '${currentInfo.driverKind}' and cannot switch to '${desiredInfo.driverKind}'.`,
-        });
-      }
-      if (
-        currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
-      ) {
-        return yield* new ProviderAdapterRequestError({
-          provider: preferredProvider,
-          method: "thread.turn.start",
-          detail: `Thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${desiredInstanceId}' because their provider resume state is incompatible.`,
-        });
-      }
-    }
     const project = yield* resolveProject(thread.projectId);
     const effectiveCwd = resolveThreadWorkspaceCwd({
       thread,
@@ -727,9 +681,14 @@ const make = Effect.gen(function* () {
         return existingSessionThreadId;
       }
 
-      const resumeCursor = shouldRestartForModelChange
-        ? undefined
-        : (activeSession?.resumeCursor ?? undefined);
+      const continuationCompatible =
+        currentInfo.driverKind === desiredInfo.driverKind &&
+        currentInfo.continuationIdentity.continuationKey ===
+          desiredInfo.continuationIdentity.continuationKey;
+      const resumeCursor =
+        shouldRestartForModelChange || (instanceChanged && !continuationCompatible)
+          ? undefined
+          : (activeSession?.resumeCursor ?? undefined);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,
@@ -820,9 +779,26 @@ const make = Effect.gen(function* () {
           : requestedModelSelection
         : input.modelSelection;
 
+    const priorMessages = (thread.messages ?? []).filter((m) => m.text && m.text.trim().length > 0);
+    let effectiveInput = normalizedInput;
+    if (
+      activeSession?.resumeCursor === undefined &&
+      priorMessages.length > 0 &&
+      normalizedInput &&
+      activeSession?.provider !== "gemini" &&
+      activeSession?.provider !== "nvidia"
+    ) {
+      const formattedHistory = priorMessages
+        .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text.trim()}`)
+        .join("\n\n");
+      if (formattedHistory.length > 0) {
+        effectiveInput = `[Previous conversation history in this thread]:\n\n${formattedHistory}\n\n[Continuing conversation with new model/provider]:\n\n${normalizedInput}`;
+      }
+    }
+
     return {
       threadId: input.threadId,
-      ...(normalizedInput ? { input: normalizedInput } : {}),
+      ...(effectiveInput ? { input: effectiveInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),

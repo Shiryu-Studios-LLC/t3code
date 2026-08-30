@@ -18,6 +18,7 @@ import {
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveLockedProvider,
   dismissBranchMismatchForSession,
   ENVIRONMENT_RECONNECT_WARNING_GRACE_MS,
   getStartedThreadModelChangeBlockReason,
@@ -483,24 +484,7 @@ describe("getStartedThreadModelChangeBlockReason", () => {
     ).toBeNull();
   });
 
-  it("allows unchanged model selections for restricted providers", () => {
-    expect(
-      getStartedThreadModelChangeBlockReason({
-        providers,
-        hasStartedSession: true,
-        currentModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-        nextModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-      }),
-    ).toBeNull();
-  });
-
-  it("blocks started-session model changes when either provider requires a new thread", () => {
+  it("allows model changes even after a provider session has started", () => {
     expect(
       getStartedThreadModelChangeBlockReason({
         providers,
@@ -514,11 +498,22 @@ describe("getStartedThreadModelChangeBlockReason", () => {
           model: "grok-build",
         },
       }),
-    ).toEqual({
-      title: "Start a new chat to change models",
-      description:
-        "This provider does not allow switching models after a conversation has started.",
-    });
+    ).toBeNull();
+  });
+});
+
+describe("deriveLockedProvider", () => {
+  it("always returns null to allow cross-provider switching mid-chat", () => {
+    expect(
+      deriveLockedProvider({
+        thread: {
+          id: ThreadId.make("t1"),
+          session: { providerName: "codex" },
+        } as unknown as Thread,
+        selectedProvider: "codex",
+        threadProvider: "codex",
+      }),
+    ).toBeNull();
   });
 });
 

@@ -475,65 +475,24 @@ export function threadHasStarted(thread: Thread | null | undefined): boolean {
 // "unknown driver -> unlocked" semantics. Callers that want the lock to track
 // a custom instance's underlying driver kind should resolve the instance id
 // upstream and pass the correlated kind.
-export function deriveLockedProvider(input: {
+export function deriveLockedProvider(_input: {
   thread: Thread | null | undefined;
   selectedProvider: string | null;
   threadProvider: string | null;
 }): ProviderDriverKind | null {
-  if (!threadHasStarted(input.thread)) {
-    return null;
-  }
-  const sessionProvider = input.thread?.session?.providerName ?? null;
-  if (sessionProvider && isProviderDriverKind(sessionProvider)) {
-    return sessionProvider;
-  }
-  const narrowedThreadProvider =
-    input.threadProvider && isProviderDriverKind(input.threadProvider)
-      ? input.threadProvider
-      : null;
-  const narrowedSelectedProvider =
-    input.selectedProvider && isProviderDriverKind(input.selectedProvider)
-      ? input.selectedProvider
-      : null;
-  return narrowedThreadProvider ?? narrowedSelectedProvider ?? null;
+  // Cross-provider and cross-model switching mid-chat is fully unlocked.
+  return null;
 }
 
-export function getStartedThreadModelChangeBlockReason(input: {
+export function getStartedThreadModelChangeBlockReason(_input: {
   providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "requiresNewThreadForModelChange">>;
   hasStartedSession: boolean;
   currentModelSelection: ModelSelection;
   currentProviderInstanceId?: ModelSelection["instanceId"] | null | undefined;
   nextModelSelection: ModelSelection;
 }): { title: string; description: string } | null {
-  if (!input.hasStartedSession) {
-    return null;
-  }
-  const currentModelSelection = {
-    ...input.currentModelSelection,
-    instanceId: input.currentProviderInstanceId ?? input.currentModelSelection.instanceId,
-  };
-  if (
-    currentModelSelection.instanceId === input.nextModelSelection.instanceId &&
-    currentModelSelection.model === input.nextModelSelection.model
-  ) {
-    return null;
-  }
-  const currentProvider = input.providers.find(
-    (snapshot) => snapshot.instanceId === currentModelSelection.instanceId,
-  );
-  const nextProvider = input.providers.find(
-    (snapshot) => snapshot.instanceId === input.nextModelSelection.instanceId,
-  );
-  if (
-    currentProvider?.requiresNewThreadForModelChange !== true &&
-    nextProvider?.requiresNewThreadForModelChange !== true
-  ) {
-    return null;
-  }
-  return {
-    title: "Start a new chat to change models",
-    description: "This provider does not allow switching models after a conversation has started.",
-  };
+  // All configured providers and models can be changed mid-thread.
+  return null;
 }
 
 export async function waitForStartedServerThread(
