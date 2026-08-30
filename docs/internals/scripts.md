@@ -13,8 +13,11 @@ vp i
 vp run dev
 ```
 
-Node 24 is required. Bun is not: the server picks Bun adapters when it detects Bun and falls back to
+Node 26 or newer is required. Bun is not: the server picks Bun adapters when it detects Bun and falls back to
 Node otherwise, and nothing in contributor setup needs it.
+
+This contributor-toolchain requirement does not change the Node runtime embedded by Electron. Desktop builds
+use Electron's bundled runtime, while the standalone server keeps its separately declared compatibility range.
 
 `vp run dev` prints a one-time pairing URL. Open it so the first browser navigation is
 authenticated.

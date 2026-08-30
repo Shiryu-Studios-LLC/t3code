@@ -114,7 +114,7 @@ Swarm state crosses the same typed boundary as ordinary sessions. The server own
 
 This repository is a pnpm monorepo. The versions declared by the checkout are the source of truth:
 
-- Node.js: `^24.13.1` (use Node 24; Node 25/26 does not satisfy the repository engine constraint)
+- Node.js: `>=26.0.0`
 - pnpm: `11.10.0`
 - Vite+: provided by the repository as a development dependency, so a separate global `vp` install is not required when you use the pnpm scripts below
 
