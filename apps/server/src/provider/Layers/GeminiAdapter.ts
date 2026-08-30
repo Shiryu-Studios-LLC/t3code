@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import { ProviderAdapterRequestError } from "../Errors.ts";
-import { withMcpToolSet } from "../../mcp/McpToolBridge.ts";
+import { callMcpToolForModel, withMcpToolSet } from "../../mcp/McpToolBridge.ts";
 import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { makeDirectChatAdapter } from "./DirectChatAdapter.ts";
 import {
@@ -70,6 +70,7 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
             parts: [{ text: message.content }],
           }));
           const resolvedModel = resolveGeminiModel(model);
+          let allowToolCalls = toolSet.tools.length > 0;
           for (let round = 0; round < 8; round += 1) {
             const request = HttpClientRequest.post(
               `${endpoint}/models/${encodeURIComponent(resolvedModel)}:generateContent`,
@@ -77,7 +78,7 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
               HttpClientRequest.setUrlParam("key", apiKey),
               HttpClientRequest.bodyJsonUnsafe({
                 contents,
-                ...(toolSet.tools.length > 0
+                ...(allowToolCalls
                   ? {
                       tools: [
                         {
@@ -123,20 +124,14 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
             contents.push({ role: "model", parts });
             const responses: Array<Record<string, unknown>> = [];
             for (const functionCall of functionCalls) {
-              const result = yield* Effect.tryPromise({
-                try: () => toolSet.call(functionCall.name, functionCall.args ?? {}),
-                catch: (cause) =>
-                  new ProviderAdapterRequestError({
-                    provider: "gemini",
-                    method: "mcp/tool-call",
-                    detail: `MCP tool '${functionCall.name}' failed.`,
-                    cause,
-                  }),
-              });
+              const result = yield* Effect.promise(() =>
+                callMcpToolForModel(toolSet, functionCall.name, functionCall.args ?? {}),
+              );
+              if (result.isError) allowToolCalls = false;
               responses.push({
                 functionResponse: {
                   name: functionCall.name,
-                  response: { result },
+                  response: result.isError ? { error: result.content } : { result: result.content },
                 },
               });
             }

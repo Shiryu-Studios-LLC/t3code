@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { generatePkce, discoverMcpOAuthMetadata, registerMcpOAuthClient } from "./mcpOAuth";
 
 describe("mcpOAuth", () => {
@@ -26,14 +26,35 @@ describe("mcpOAuth", () => {
   });
 
   it("successfully registers dynamic client with DevSpace OAuth server", async () => {
-    const clientId = await registerMcpOAuthClient(
+    const client = await registerMcpOAuthClient(
       "https://devspace.shiryu.org/register",
       "http://localhost:3773/oauth-callback.html",
       "T3 Studio Test",
       "devspace",
     );
-    expect(clientId).toBeTruthy();
-    expect(typeof clientId).toBe("string");
-    expect(clientId?.startsWith("devspace-")).toBe(true);
+    expect(client.clientId.startsWith("devspace-")).toBe(true);
+    expect(client.clientSecret).toBeTruthy();
+  });
+
+  it("reports dynamic client registration failures instead of returning a fallback", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response('{"error":"invalid_redirect_uri"}', {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    try {
+      await expect(
+        registerMcpOAuthClient(
+          "https://example.test/register",
+          "http://127.0.0.1:3773/oauth-callback.html",
+        ),
+      ).rejects.toThrow(
+        'Dynamic OAuth client registration failed (400): {"error":"invalid_redirect_uri"}',
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

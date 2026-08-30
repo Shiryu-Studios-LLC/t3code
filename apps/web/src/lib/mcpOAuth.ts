@@ -132,9 +132,10 @@ export async function registerMcpOAuthClient(
   redirectUri: string,
   clientName = "T3 Studio",
   scope = "devspace",
-): Promise<RegisteredClient | null> {
+): Promise<RegisteredClient> {
+  let res: Response;
   try {
-    const res = await fetch(registrationEndpoint, {
+    res = await fetch(registrationEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -145,20 +146,25 @@ export async function registerMcpOAuthClient(
         scope,
       }),
     });
-
-    if (res.ok) {
-      const data = (await res.json()) as { client_id?: string; client_secret?: string };
-      if (data.client_id) {
-        return {
-          clientId: data.client_id,
-          clientSecret: data.client_secret,
-        };
-      }
-    }
-  } catch (error) {
-    console.warn("[mcp-oauth] Failed dynamic client registration:", error);
+  } catch (cause) {
+    throw new Error("Dynamic OAuth client registration request failed.", { cause });
   }
-  return null;
+
+  if (!res.ok) {
+    const detail = (await res.text()).trim().slice(0, 500);
+    throw new Error(
+      `Dynamic OAuth client registration failed (${res.status})${detail ? `: ${detail}` : "."}`,
+    );
+  }
+
+  const data = (await res.json()) as { client_id?: string; client_secret?: string };
+  if (!data.client_id) {
+    throw new Error("Dynamic OAuth client registration returned no client_id.");
+  }
+  return {
+    clientId: data.client_id,
+    ...(data.client_secret !== undefined ? { clientSecret: data.client_secret } : {}),
+  };
 }
 
 export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOAuthResult> {
@@ -179,19 +185,19 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
 
   const { verifier, challenge, state } = await generatePkce();
 
-  // Dynamic registration or fallback client_id
+  // Dynamic client registration
   const scopeParam = metadata.scopesSupported.join(" ") || "devspace";
-  const regResult = metadata.registrationEndpoint
-    ? await registerMcpOAuthClient(
-        metadata.registrationEndpoint,
-        redirectUri,
-        "T3 Studio",
-        scopeParam,
-      )
-    : null;
-
-  const clientId = regResult?.clientId ?? "devspace";
-  const clientSecret = regResult?.clientSecret;
+  if (!metadata.registrationEndpoint) {
+    throw new Error("The MCP authorization server does not support dynamic client registration.");
+  }
+  const registeredClient = await registerMcpOAuthClient(
+    metadata.registrationEndpoint,
+    redirectUri,
+    "T3 Studio",
+    scopeParam,
+  );
+  const clientId = registeredClient.clientId;
+  const clientSecret = registeredClient.clientSecret;
 
   const authUrl = new URL(metadata.authorizationEndpoint);
   authUrl.searchParams.set("client_id", clientId);

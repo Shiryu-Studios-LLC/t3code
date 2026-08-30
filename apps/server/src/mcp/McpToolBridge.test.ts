@@ -1,4 +1,4 @@
-import { fileURLToPath } from "node:url";
+import * as NodeURL from "node:url";
 
 import { describe, expect, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
@@ -8,9 +8,25 @@ import {
   clearAllExternalMcpProviderServers,
   setExternalMcpProviderServers,
 } from "./ExternalMcpProviderSession.ts";
-import { withMcpToolSet } from "./McpToolBridge.ts";
+import { callMcpToolForModel, withMcpToolSet } from "./McpToolBridge.ts";
 
 describe("MCP Tool Bridge", () => {
+  it("turns a failed tool call into model-readable output", async () => {
+    const outcome = await callMcpToolForModel(
+      {
+        call: () => Promise.reject(new Error("preview host unavailable")),
+      },
+      "mcp_t3-code_preview_snapshot",
+      {},
+    );
+
+    expect(outcome).toEqual({
+      content:
+        "MCP tool 'mcp_t3-code_preview_snapshot' failed: preview host unavailable Continue without this tool.",
+      isError: true,
+    });
+  });
+
   it.effect("handles sessions without any MCP servers connected", () =>
     Effect.acquireUseRelease(
       Effect.sync(() => {
@@ -40,7 +56,9 @@ describe("MCP Tool Bridge", () => {
             transport: {
               type: "stdio",
               command: process.execPath,
-              args: [fileURLToPath(new URL("./fixtures/echoMcpServer.mjs", import.meta.url))],
+              args: [
+                NodeURL.fileURLToPath(new URL("./fixtures/echoMcpServer.mjs", import.meta.url)),
+              ],
               environment: [],
             },
           },
@@ -69,7 +87,9 @@ describe("MCP Tool Bridge", () => {
             transport: {
               type: "stdio",
               command: process.execPath,
-              args: [fileURLToPath(new URL("./fixtures/echoMcpServer.mjs", import.meta.url))],
+              args: [
+                NodeURL.fileURLToPath(new URL("./fixtures/echoMcpServer.mjs", import.meta.url)),
+              ],
               environment: [],
             },
           },
@@ -113,7 +133,9 @@ describe("MCP Tool Bridge", () => {
             transport: {
               type: "stdio",
               command: process.execPath,
-              args: [fileURLToPath(new URL("./fixtures/echoMcpServer.mjs", import.meta.url))],
+              args: [
+                NodeURL.fileURLToPath(new URL("./fixtures/echoMcpServer.mjs", import.meta.url)),
+              ],
               environment: [],
             },
           },

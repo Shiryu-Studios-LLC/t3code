@@ -22,6 +22,11 @@ export interface McpToolSet {
   readonly close: () => Promise<void>;
 }
 
+export interface McpToolCallOutcome {
+  readonly content: string;
+  readonly isError: boolean;
+}
+
 interface ConnectedServer {
   readonly id: string;
   readonly name: string;
@@ -111,6 +116,22 @@ function resultText(result: unknown): string {
   if (record.structuredContent !== undefined) return JSON.stringify(record.structuredContent);
   if (record.toolResult !== undefined) return JSON.stringify(record.toolResult);
   return JSON.stringify(content);
+}
+
+export async function callMcpToolForModel(
+  toolSet: Pick<McpToolSet, "call">,
+  name: string,
+  input: unknown,
+): Promise<McpToolCallOutcome> {
+  try {
+    return { content: await toolSet.call(name, input), isError: false };
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message.trim() : "";
+    return {
+      content: `MCP tool '${name}' failed${detail ? `: ${detail}` : "."} Continue without this tool.`,
+      isError: true,
+    };
+  }
 }
 
 async function openMcpToolSetPromise(threadId: ThreadId): Promise<McpToolSet> {
