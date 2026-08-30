@@ -354,7 +354,6 @@ export const attachmentUploadRouteLayer = HttpRouter.add(
 interface PendingMcpOAuthEntry {
   readonly code?: string;
   readonly error?: string;
-  readonly timestamp: number;
 }
 const pendingMcpOAuth = new Map<string, PendingMcpOAuthEntry>();
 
@@ -386,12 +385,11 @@ export const mcpOAuthCallbackRouteLayer = Layer.mergeAll(
       const body = json as { state?: string; code?: string; error?: string };
       if (body.state) {
         pendingMcpOAuth.set(body.state, {
-          code: body.code,
-          error: body.error,
-          timestamp: Date.now(),
+          ...(body.code !== undefined ? { code: body.code } : {}),
+          ...(body.error !== undefined ? { error: body.error } : {}),
         });
       }
-      return HttpServerResponse.json({ ok: true }, { headers: OAUTH_CORS_HEADERS });
+      return yield* HttpServerResponse.json({ ok: true }, { headers: OAUTH_CORS_HEADERS });
     }),
   ),
   HttpRouter.add(
@@ -401,15 +399,15 @@ export const mcpOAuthCallbackRouteLayer = Layer.mergeAll(
       const request = yield* HttpServerRequest.HttpServerRequest;
       const url = HttpServerRequest.toURL(request);
       if (Option.isNone(url)) {
-        return HttpServerResponse.json({ found: false }, { headers: OAUTH_CORS_HEADERS });
+        return yield* HttpServerResponse.json({ found: false }, { headers: OAUTH_CORS_HEADERS });
       }
       const state = url.value.searchParams.get("state");
       if (!state || !pendingMcpOAuth.has(state)) {
-        return HttpServerResponse.json({ found: false }, { headers: OAUTH_CORS_HEADERS });
+        return yield* HttpServerResponse.json({ found: false }, { headers: OAUTH_CORS_HEADERS });
       }
       const entry = pendingMcpOAuth.get(state)!;
       pendingMcpOAuth.delete(state);
-      return HttpServerResponse.json(
+      return yield* HttpServerResponse.json(
         {
           found: true,
           code: entry.code,
