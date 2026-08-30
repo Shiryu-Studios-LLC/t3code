@@ -351,6 +351,57 @@ export const attachmentUploadRouteLayer = HttpRouter.add(
   }),
 );
 
+interface PendingMcpOAuthEntry {
+  readonly code?: string;
+  readonly error?: string;
+  readonly timestamp: number;
+}
+const pendingMcpOAuth = new Map<string, PendingMcpOAuthEntry>();
+
+export const mcpOAuthCallbackRouteLayer = Layer.mergeAll(
+  HttpRouter.add(
+    "POST",
+    "/api/mcp/oauth/callback",
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const json = yield* request.json.pipe(
+        Effect.orElseSucceed(() => ({}) as Record<string, unknown>),
+      );
+      const body = json as { state?: string; code?: string; error?: string };
+      if (body.state) {
+        pendingMcpOAuth.set(body.state, {
+          code: body.code,
+          error: body.error,
+          timestamp: Date.now(),
+        });
+      }
+      return HttpServerResponse.json({ ok: true });
+    }),
+  ),
+  HttpRouter.add(
+    "GET",
+    "/api/mcp/oauth/callback",
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const url = HttpServerRequest.toURL(request);
+      if (Option.isNone(url)) {
+        return HttpServerResponse.json({ found: false });
+      }
+      const state = url.value.searchParams.get("state");
+      if (!state || !pendingMcpOAuth.has(state)) {
+        return HttpServerResponse.json({ found: false });
+      }
+      const entry = pendingMcpOAuth.get(state)!;
+      pendingMcpOAuth.delete(state);
+      return HttpServerResponse.json({
+        found: true,
+        code: entry.code,
+        error: entry.error,
+      });
+    }),
+  ),
+);
+
 export const staticAndDevRouteLayer = HttpRouter.add(
   "GET",
   "*",

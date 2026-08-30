@@ -96,6 +96,21 @@
           const codeContainerEl = document.getElementById("code-container");
           const codeValEl = document.getElementById("code-val");
 
+          // Report to local server callback endpoint
+          if (state) {
+            try {
+              fetch("/api/mcp/oauth/callback", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  state,
+                  code: code || undefined,
+                  error: error_description || error || undefined,
+                }),
+              }).catch(() => {});
+            } catch {}
+          }
+
           if (error) {
             titleEl.textContent = "Authorization Failed";
             msgEl.textContent = error_description || error;
@@ -114,6 +129,11 @@
           }
 
           if (code) {
+            titleEl.textContent = "Authorized Successfully";
+            msgEl.textContent =
+              "Connected to T3 Studio! You can close this tab and return to T3 Studio.";
+            spinnerEl.style.display = "none";
+
             if (window.opener) {
               window.opener.postMessage(
                 {
@@ -123,17 +143,9 @@
                 },
                 "*",
               );
-              titleEl.textContent = "Authorized Successfully";
-              msgEl.textContent = "Connected to T3 Studio! This window will close automatically.";
               setTimeout(() => {
                 window.close();
-              }, 1000);
-            } else {
-              titleEl.textContent = "Authorization Code";
-              msgEl.textContent = "Return to T3 Studio to complete connection.";
-              spinnerEl.style.display = "none";
-              codeContainerEl.style.display = "block";
-              codeValEl.textContent = code;
+              }, 1200);
             }
           } else {
             titleEl.textContent = "No Authorization Code";

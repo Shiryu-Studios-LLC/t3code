@@ -600,7 +600,7 @@ function McpServersSetting() {
                             ...prev,
                             [server.id]: {
                               status: "authorizing",
-                              message: "Opening OAuth authorization window...",
+                              message: "Waiting for authorization in your browser...",
                             },
                           }));
 

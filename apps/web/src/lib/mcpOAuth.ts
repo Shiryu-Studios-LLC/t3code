@@ -1,7 +1,4 @@
-/**
- * MCP OAuth 2.0 PKCE helper for authenticating remote HTTP MCP servers (e.g. DevSpace).
- * Implements RFC 8414, RFC 7591 (Dynamic Client Registration), and RFC 7636 (PKCE).
- */
+import { resolvePrimaryEnvironmentHttpUrl } from "../environments/primary/target.ts";
 
 export interface McpOAuthMetadata {
   readonly authorizationServer: string;
@@ -15,6 +12,11 @@ export interface McpOAuthResult {
   readonly accessToken: string;
   readonly tokenType?: string | undefined;
   readonly scope?: string | undefined;
+}
+
+export interface RegisteredClient {
+  readonly clientId: string;
+  readonly clientSecret?: string | undefined;
 }
 
 function base64UrlEncode(buffer: ArrayBuffer): string {
@@ -130,7 +132,7 @@ export async function registerMcpOAuthClient(
   redirectUri: string,
   clientName = "T3 Studio",
   scope = "devspace",
-): Promise<string | null> {
+): Promise<RegisteredClient | null> {
   try {
     const res = await fetch(registrationEndpoint, {
       method: "POST",
@@ -145,8 +147,13 @@ export async function registerMcpOAuthClient(
     });
 
     if (res.ok) {
-      const data = (await res.json()) as { client_id?: string };
-      return data.client_id ?? null;
+      const data = (await res.json()) as { client_id?: string; client_secret?: string };
+      if (data.client_id) {
+        return {
+          clientId: data.client_id,
+          clientSecret: data.client_secret,
+        };
+      }
     }
   } catch (error) {
     console.warn("[mcp-oauth] Failed dynamic client registration:", error);
@@ -160,26 +167,32 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
     throw new Error(`Unable to discover OAuth endpoints for MCP server: ${mcpUrl}`);
   }
 
-  const redirectUri = `${window.location.origin}/oauth-callback.html`;
+  let redirectUri: string;
+  try {
+    redirectUri = resolvePrimaryEnvironmentHttpUrl("/oauth-callback.html");
+  } catch {
+    redirectUri = `${window.location.origin}/oauth-callback.html`;
+  }
+  if (redirectUri.startsWith("t3code://") || redirectUri.startsWith("t3code-dev://")) {
+    redirectUri = "http://127.0.0.1:3773/oauth-callback.html";
+  }
+
   const { verifier, challenge, state } = await generatePkce();
 
   // Dynamic registration or fallback client_id
-  let clientId: string | null = null;
-  if (metadata.registrationEndpoint) {
-    clientId = await registerMcpOAuthClient(
-      metadata.registrationEndpoint,
-      redirectUri,
-      "T3 Studio",
-      metadata.scopesSupported.join(" ") || "devspace",
-    );
-  }
-
-  if (!clientId) {
-    // If registration is not supported, use standard client identifier
-    clientId = "t3-studio-client";
-  }
-
   const scopeParam = metadata.scopesSupported.join(" ") || "devspace";
+  const regResult = metadata.registrationEndpoint
+    ? await registerMcpOAuthClient(
+        metadata.registrationEndpoint,
+        redirectUri,
+        "T3 Studio",
+        scopeParam,
+      )
+    : null;
+
+  const clientId = regResult?.clientId ?? "devspace";
+  const clientSecret = regResult?.clientSecret;
+
   const authUrl = new URL(metadata.authorizationEndpoint);
   authUrl.searchParams.set("client_id", clientId);
   authUrl.searchParams.set("response_type", "code");
@@ -190,7 +203,7 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
   authUrl.searchParams.set("code_challenge_method", "S256");
   authUrl.searchParams.set("state", state);
 
-  // Open Popup Window
+  // Open Authorization Window / Browser
   const width = 600;
   const height = 750;
   const left = window.screenX + (window.outerWidth - width) / 2;
@@ -202,11 +215,7 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
     `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes,scrollbars=yes`,
   );
 
-  if (!popup) {
-    throw new Error("Popup blocked by browser. Please allow popups for T3 Studio to authorize.");
-  }
-
-  // Wait for postMessage callback
+  // Wait for postMessage or server callback endpoint
   const code = await new Promise<string>((resolve, reject) => {
     let cleanup: () => void = () => {};
 
@@ -237,16 +246,44 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
       }
     };
 
+    // Also poll server callback endpoint /api/mcp/oauth/callback?state=...
+    let pollServerUrl = "/api/mcp/oauth/callback";
+    try {
+      pollServerUrl = resolvePrimaryEnvironmentHttpUrl("/api/mcp/oauth/callback", { state });
+    } catch {
+      pollServerUrl = `/api/mcp/oauth/callback?state=${encodeURIComponent(state)}`;
+    }
+
+    const pollServer = setInterval(async () => {
+      try {
+        const res = await fetch(pollServerUrl);
+        if (res.ok) {
+          const json = (await res.json()) as { found: boolean; code?: string; error?: string };
+          if (json.found) {
+            if (json.error) {
+              cleanup();
+              reject(new Error(`OAuth Authorization Error: ${json.error}`));
+            } else if (json.code) {
+              cleanup();
+              resolve(json.code);
+            }
+          }
+        }
+      } catch {
+        // Ignore polling errors
+      }
+    }, 800);
+
     const pollClosed = setInterval(() => {
-      if (popup.closed) {
-        cleanup();
-        reject(new Error("Authorization popup window was closed before completing."));
+      if (popup && popup.closed) {
+        // In browser popups, notify on manual close
       }
     }, 1000);
 
     cleanup = () => {
       clearTimeout(timer);
       clearInterval(pollClosed);
+      clearInterval(pollServer);
       window.removeEventListener("message", messageHandler);
     };
 
@@ -259,6 +296,9 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
   tokenParams.set("code", code);
   tokenParams.set("redirect_uri", redirectUri);
   tokenParams.set("client_id", clientId);
+  if (clientSecret) {
+    tokenParams.set("client_secret", clientSecret);
+  }
   tokenParams.set("code_verifier", verifier);
   tokenParams.set("resource", mcpUrl);
 
