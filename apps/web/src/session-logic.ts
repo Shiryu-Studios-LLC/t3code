@@ -2,6 +2,7 @@ import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { isBackgroundTaskActivity } from "@t3tools/client-runtime/state/subagentRuntime";
+import { normalizeRuntimeIssueMessage } from "./runtimeIssues";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
@@ -54,6 +55,29 @@ export const PROVIDER_OPTIONS: Array<{
     label: "Grok",
     available: true,
     pickerSidebarBadge: "new",
+  },
+  {
+    value: ProviderDriverKind.make("gemini"),
+    label: "Gemini",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
+  {
+    value: ProviderDriverKind.make("nvidia"),
+    label: "NVIDIA",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
+  {
+    value: ProviderDriverKind.make("omniroute"),
+    label: "OmniRoute",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
+  {
+    value: ProviderDriverKind.make("ollama"),
+    label: "Ollama",
+    available: true,
   },
 ];
 
@@ -183,6 +207,13 @@ export type TimelineEntry =
     };
 
 export function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
+  // Provider-exposed reasoning summaries are narrative Thinking rows, not
+  // tools. Keeping them out of tool grouping makes the word "Thinking"
+  // itself the expandable timeline row instead of collapsing it behind a
+  // generic "Used 1 tool" summary.
+  if (entry.sourceActivityKind === "reasoning.summary") {
+    return false;
+  }
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
     return true;
   }
@@ -936,6 +967,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? payload.detail
       : null;
   const taskLabel = taskSummary || taskDetailAsLabel;
+  const runtimeLabel =
+    activity.kind === "runtime.warning" || activity.kind === "runtime.error"
+      ? normalizeRuntimeIssueMessage(
+          typeof payload?.message === "string" ? payload.message : activity.summary,
+        )
+      : null;
   const detail = isTaskActivity
     ? !taskDetailAsLabel &&
       payload &&
@@ -949,9 +986,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     id: activity.id,
     createdAt: activity.createdAt,
     turnId: activity.turnId,
-    label: taskLabel || activity.summary,
+    label: taskLabel || runtimeLabel || activity.summary,
     tone:
-      activity.kind === "task.progress"
+      activity.kind === "task.progress" || activity.kind === "reasoning.summary"
         ? "thinking"
         : activity.tone === "approval"
           ? "info"
@@ -1850,9 +1887,15 @@ export function deriveTimelineEntries(
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...proposedPlanRows, ...turnPlanRows, ...workRows].toSorted((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
-  );
+  return [...messageRows, ...proposedPlanRows, ...turnPlanRows, ...workRows].toSorted((a, b) => {
+    const byCreatedAt = a.createdAt.localeCompare(b.createdAt);
+    if (byCreatedAt !== 0) return byCreatedAt;
+    if (a.kind === "message" && b.kind === "message" && a.message.role !== b.message.role) {
+      if (a.message.role === "user") return -1;
+      if (b.message.role === "user") return 1;
+    }
+    return 0;
+  });
 }
 
 export function inferCheckpointTurnCountByTurnId(

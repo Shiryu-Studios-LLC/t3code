@@ -56,6 +56,7 @@ export async function discoverMcpOAuthMetadata(mcpUrl: string): Promise<McpOAuth
   try {
     const url = new URL(mcpUrl);
     const origin = url.origin;
+    const isDevspace = origin.includes("devspace.shiryu.org") || origin.includes("devspace");
 
     // 1. Check if resource metadata URL exists
     const resourceMetaUrls = [
@@ -64,7 +65,7 @@ export async function discoverMcpOAuthMetadata(mcpUrl: string): Promise<McpOAuth
     ];
 
     let authServerUrl: string = origin;
-    let scopes: string[] = ["devspace"];
+    let scopes: string[] = isDevspace ? ["devspace"] : ["mcp"];
 
     for (const metaUrl of resourceMetaUrls) {
       try {
@@ -82,6 +83,8 @@ export async function discoverMcpOAuthMetadata(mcpUrl: string): Promise<McpOAuth
             scopes = meta.scopes_supported;
           }
           break;
+        } else if (isDevspace && res.status === 404) {
+          // Devspace may not have the resource metadata endpoint, continue to auth server metadata
         }
       } catch {
         // Ignore and fallback
@@ -108,12 +111,25 @@ export async function discoverMcpOAuthMetadata(mcpUrl: string): Promise<McpOAuth
             scopesSupported: meta.scopes_supported ?? scopes,
           };
         }
+      } else if (isDevspace && res.status === 404) {
+        // Devspace may use non-standard endpoints, fall through to defaults
       }
     } catch {
       // Fallback
     }
 
     // 3. Defaults for standard OAuth servers
+    // For Devspace, use known endpoints if metadata discovery fails
+    if (isDevspace) {
+      return {
+        authorizationServer: "https://devspace.shiryu.org",
+        authorizationEndpoint: "https://devspace.shiryu.org/authorize",
+        tokenEndpoint: "https://devspace.shiryu.org/token",
+        registrationEndpoint: "https://devspace.shiryu.org/register",
+        scopesSupported: ["devspace"],
+      };
+    }
+
     return {
       authorizationServer: authServerUrl,
       authorizationEndpoint: `${authServerUrl}/authorize`,
@@ -170,7 +186,9 @@ export async function registerMcpOAuthClient(
 export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOAuthResult> {
   const metadata = await discoverMcpOAuthMetadata(mcpUrl);
   if (!metadata) {
-    throw new Error(`Unable to discover OAuth endpoints for MCP server: ${mcpUrl}`);
+    throw new Error(
+      `Unable to discover OAuth endpoints for MCP server: ${mcpUrl}. Ensure the server URL is correct and accessible.`,
+    );
   }
 
   let redirectUri: string;
@@ -209,25 +227,30 @@ export async function authorizeMcpServerWithPopup(mcpUrl: string): Promise<McpOA
   authUrl.searchParams.set("code_challenge_method", "S256");
   authUrl.searchParams.set("state", state);
 
-  // Open Authorization Window / Browser
+  // Open Authorization Window / Browser (Electron intercepts window.open and opens system browser)
   const width = 600;
   const height = 750;
   const left = window.screenX + (window.outerWidth - width) / 2;
   const top = window.screenY + (window.outerHeight - height) / 2;
 
-  const popup = window.open(
-    authUrl.toString(),
-    "t3-mcp-oauth",
-    `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes,scrollbars=yes`,
-  );
+  let popup: Window | null = null;
+  try {
+    popup = window.open(
+      authUrl.toString(),
+      "t3-mcp-oauth",
+      `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes,scrollbars=yes`,
+    );
+  } catch {
+    // In Electron or restricted browser contexts, window.open may be handled externally
+  }
 
-  // Wait for postMessage or server callback endpoint
+  // Wait for postMessage, server callback endpoint polling, broadcast channel, or storage events
   const code = await new Promise<string>((resolve, reject) => {
     let cleanup: () => void = () => {};
 
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error("Authentication timed out after 2 minutes."));
+      reject(new Error("Authentication timed out after 2 minutes. Please try again."));
     }, 120_000);
 
     const messageHandler = (event: MessageEvent) => {

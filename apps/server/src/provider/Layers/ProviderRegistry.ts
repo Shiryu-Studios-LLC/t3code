@@ -39,6 +39,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
@@ -52,7 +53,9 @@ import {
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
+import { bootstrapMissingProviderClis } from "../providerBootstrap.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
+import { runProviderMaintenanceCommandWithSpawner } from "../providerMaintenanceRunner.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
 
 const loadProviders = (
@@ -213,6 +216,7 @@ export const ProviderRegistryLive = Layer.effect(
     const config = yield* ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
     // Aggregator PubSub — consumers (WS gateway, etc.) subscribe here for
     // coalesced updates across every instance.
@@ -691,6 +695,31 @@ export const ProviderRegistryLive = Layer.effect(
       Stream.fromSubscription(instanceChanges),
       () => syncLiveSourcesAndContinue,
     ).pipe(Effect.forkScoped);
+
+    // A fresh Linux desktop install should be usable without asking the user
+    // to manually provision every supported provider CLI first. Keep this
+    // off the layer-construction path: the bootstrap runs once in a scoped
+    // background fiber, probes current provider state, installs only missing
+    // default/bare CLIs, then refreshes their snapshots. Explicit custom
+    // binary paths remain untouched.
+    if (
+      process.env.NODE_ENV !== "test" &&
+      process.env.T3CODE_DISABLE_PROVIDER_AUTO_INSTALL !== "1"
+    ) {
+      yield* bootstrapMissingProviderClis({
+        refreshProviders: () => refreshAll(),
+        refreshInstance,
+        getMaintenanceCapabilities: getProviderMaintenanceCapabilitiesForInstance,
+        setUpdateState: (instanceId, state) =>
+          setProviderMaintenanceActionState({ instanceId, action: "update", state }),
+        runCommand: (command, args) =>
+          runProviderMaintenanceCommandWithSpawner({
+            spawner: childProcessSpawner,
+            command,
+            args,
+          }),
+      }).pipe(Effect.forkScoped);
+    }
 
     const recoverRefreshFailure = Effect.fn("recoverRefreshFailure")(function* (
       cause: Cause.Cause<unknown>,

@@ -26,6 +26,8 @@ import { CursorDriver, type CursorDriverEnv } from "./Drivers/CursorDriver.ts";
 import { GrokDriver, type GrokDriverEnv } from "./Drivers/GrokDriver.ts";
 import { GeminiDriver, type GeminiDriverEnv } from "./Drivers/GeminiDriver.ts";
 import { NvidiaDriver, type NvidiaDriverEnv } from "./Drivers/NvidiaDriver.ts";
+import { OllamaDriver, type OllamaDriverEnv } from "./Drivers/OllamaDriver.ts";
+import { OmniRouteDriver, type OmniRouteDriverEnv } from "./Drivers/OmniRouteDriver.ts";
 import { OpenCodeDriver, type OpenCodeDriverEnv } from "./Drivers/OpenCodeDriver.ts";
 import type { AnyProviderDriver } from "./ProviderDriver.ts";
 
@@ -41,6 +43,8 @@ export type BuiltInDriversEnv =
   | GeminiDriverEnv
   | GrokDriverEnv
   | NvidiaDriverEnv
+  | OllamaDriverEnv
+  | OmniRouteDriverEnv
   | OpenCodeDriverEnv;
 
 /**
@@ -56,4 +60,6 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   OpenCodeDriver,
   GeminiDriver,
   NvidiaDriver,
+  OllamaDriver,
+  OmniRouteDriver,
 ];

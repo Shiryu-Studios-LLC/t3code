@@ -46,11 +46,28 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
 
     const resolved = yield* registry.resolve(token);
     expect(resolved?.threadId).toBe(threadId);
+    expect(resolved?.capabilities.has("preview")).toBe(true);
 
     yield* registry.revokeThread(threadId);
     expect(yield* registry.resolve(token)).toBeUndefined();
 
     timestamp += 2_000;
+  }),
+);
+
+it.effect("supports authenticated T3 MCP sessions without preview capability", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const issued = yield* registry.issue({
+      threadId: ThreadId.make("thread-extension-only"),
+      providerInstanceId: ProviderInstanceId.make("nvidia"),
+      capabilities: new Set(),
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const resolved = yield* registry.resolve(token);
+
+    expect(resolved).toBeDefined();
+    expect(resolved?.capabilities.has("preview")).toBe(false);
   }),
 );
 

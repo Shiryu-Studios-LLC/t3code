@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 
 import * as DesktopIpc from "./DesktopIpc.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
-import { synthesizeSpeech } from "./methods/textToSpeech.ts";
+import { synthesizeSpeech, systemSpeech } from "./methods/textToSpeech.ts";
 import {
   clearConnectionCatalog,
   getConnectionCatalog,
@@ -38,6 +38,7 @@ import {
   getSystemLocale,
   getWindowFullscreenState,
   openExternal,
+  showItemInFolder,
   probeRemoteEditors,
   pickFolder,
   pickProjectFavicon,
@@ -61,6 +62,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getClientSettings);
   yield* ipc.handle(setClientSettings);
   yield* ipc.handle(synthesizeSpeech);
+  yield* ipc.handle(systemSpeech);
   yield* ipc.handle(getConnectionCatalog);
   yield* ipc.handle(setConnectionCatalog);
   yield* ipc.handle(clearConnectionCatalog);
@@ -90,6 +92,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setTheme);
   yield* ipc.handle(showContextMenu);
   yield* ipc.handle(openExternal);
+  yield* ipc.handle(showItemInFolder);
   yield* ipc.handle(probeRemoteEditors);
   yield* ipc.handle(getUpdateState);
   yield* ipc.handle(setUpdateChannel);

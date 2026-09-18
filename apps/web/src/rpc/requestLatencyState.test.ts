@@ -102,6 +102,12 @@ describe("requestLatencyState", () => {
     ]);
   });
 
+  it("does not surface local image generation as a generic slow RPC", () => {
+    trackRpcRequestSent("1", WS_METHODS.localImageGenerate, "localImage.generate · env-1");
+    vi.advanceTimersByTime(LONG_RUNNING_RPC_ACK_THRESHOLD_MS * 2);
+    expect(getSlowRpcAckRequests()).toEqual([]);
+  });
+
   it("evicts the oldest pending requests once the tracker reaches capacity", () => {
     for (let index = 0; index < MAX_TRACKED_RPC_ACK_REQUESTS + 1; index += 1) {
       trackRpcRequestSent(String(index), "server.getConfig");

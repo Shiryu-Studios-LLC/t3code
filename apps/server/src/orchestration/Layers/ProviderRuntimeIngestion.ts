@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
+  type ChatAttachment,
   CommandId,
   MessageId,
   type OrchestrationEvent,
@@ -96,8 +97,13 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const REASONING_SUMMARY_BY_TURN_CACHE_CAPACITY = 10_000;
+const REASONING_SUMMARY_BY_TURN_TTL = Duration.minutes(120);
+const MAX_REASONING_SUMMARY_CHARS = 32_000;
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
+const GENERATED_ATTACHMENTS_BY_TURN_CACHE_CAPACITY = 10_000;
+const GENERATED_ATTACHMENTS_BY_TURN_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -1051,10 +1057,29 @@ const make = Effect.gen(function* () {
       ),
   });
 
+  const generatedAttachmentsByTurnKey = yield* Cache.make<string, ReadonlyArray<ChatAttachment>>({
+    capacity: GENERATED_ATTACHMENTS_BY_TURN_CACHE_CAPACITY,
+    timeToLive: GENERATED_ATTACHMENTS_BY_TURN_TTL,
+    lookup: () => Effect.succeed([]),
+  });
+
   const bufferedProposedPlanById = yield* Cache.make<string, { text: string; createdAt: string }>({
     capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
+  });
+  const reasoningSummaryByTurnKey = yield* Cache.make<
+    string,
+    { text: string; createdAt: string; activityId: EventId }
+  >({
+    capacity: REASONING_SUMMARY_BY_TURN_CACHE_CAPACITY,
+    timeToLive: REASONING_SUMMARY_BY_TURN_TTL,
+    lookup: (key) =>
+      Effect.succeed({
+        text: "",
+        createdAt: "",
+        activityId: EventId.make(`reasoning-summary:${key}`),
+      }),
   });
 
   // Task names arrive on task.started/task.progress but not on task.completed,
@@ -1146,6 +1171,31 @@ const make = Effect.gen(function* () {
 
   const clearAssistantSegmentStateForTurn = (threadId: ThreadId, turnId: TurnId) =>
     Cache.invalidate(assistantSegmentStateByTurnKey, providerTurnKey(threadId, turnId));
+
+  const appendGeneratedAttachmentsForTurn = (
+    threadId: ThreadId,
+    turnId: TurnId,
+    attachments: ReadonlyArray<ChatAttachment>,
+  ) =>
+    Cache.getOption(generatedAttachmentsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
+      Effect.flatMap((existing) => {
+        const previous = Option.getOrElse(existing, (): ReadonlyArray<ChatAttachment> => []);
+        const byId = new Map(previous.map((attachment) => [attachment.id, attachment] as const));
+        for (const attachment of attachments) byId.set(attachment.id, attachment);
+        return Cache.set(generatedAttachmentsByTurnKey, providerTurnKey(threadId, turnId), [
+          ...byId.values(),
+        ]);
+      }),
+    );
+
+  const takeGeneratedAttachmentsForTurn = (threadId: ThreadId, turnId: TurnId) =>
+    Cache.getOption(generatedAttachmentsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
+      Effect.flatMap((existing) =>
+        Cache.invalidate(generatedAttachmentsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
+          Effect.as(Option.getOrElse(existing, (): ReadonlyArray<ChatAttachment> => [])),
+        ),
+      ),
+    );
 
   const getActiveAssistantMessageIdForTurn = (threadId: ThreadId, turnId: TurnId) =>
     getAssistantSegmentStateForTurn(threadId, turnId).pipe(
@@ -1264,6 +1314,29 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const appendReasoningSummary = (
+    threadId: ThreadId,
+    turnId: TurnId | undefined,
+    delta: string,
+    createdAt: string,
+  ) => {
+    const key = `${threadId}:${turnId ?? "no-turn"}`;
+    return Cache.get(reasoningSummaryByTurnKey, key).pipe(
+      Effect.flatMap((existing) => {
+        const text = `${existing.text}${delta}`.slice(0, MAX_REASONING_SUMMARY_CHARS);
+        const next = {
+          text,
+          createdAt: existing.createdAt || createdAt,
+          activityId: existing.activityId,
+        };
+        return Cache.set(reasoningSummaryByTurnKey, key, next).pipe(Effect.as(next));
+      }),
+    );
+  };
+
+  const clearReasoningSummary = (threadId: ThreadId, turnId: TurnId | undefined) =>
+    Cache.invalidate(reasoningSummaryByTurnKey, `${threadId}:${turnId ?? "no-turn"}`);
+
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
 
@@ -1349,6 +1422,9 @@ const make = Effect.gen(function* () {
             ? input.fallbackText!
             : "";
       const hasRenderableText = hasRenderableAssistantText(text);
+      const generatedAttachments = input.turnId
+        ? yield* takeGeneratedAttachmentsForTurn(input.threadId, input.turnId)
+        : [];
 
       if (hasRenderableText) {
         yield* orchestrationEngine.dispatch({
@@ -1362,12 +1438,13 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (input.hasProjectedMessage || hasRenderableText) {
+      if (input.hasProjectedMessage || hasRenderableText || generatedAttachments.length > 0) {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.complete",
           commandId: yield* providerCommandId(input.event, input.commandTag),
           threadId: input.threadId,
           messageId: input.messageId,
+          ...(generatedAttachments.length > 0 ? { attachments: [...generatedAttachments] } : {}),
           ...(input.turnId ? { turnId: input.turnId } : {}),
           createdAt: input.createdAt,
         });
@@ -1501,6 +1578,7 @@ const make = Effect.gen(function* () {
       const proposedPlanPrefix = `plan:${threadId}:`;
       const turnKeys = Array.from(yield* Cache.keys(turnMessageIdsByTurnKey));
       const assistantSegmentKeys = Array.from(yield* Cache.keys(assistantSegmentStateByTurnKey));
+      const generatedAttachmentKeys = Array.from(yield* Cache.keys(generatedAttachmentsByTurnKey));
       const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
       const taskDescriptionKeys = Array.from(yield* Cache.keys(taskDescriptionByTaskKey));
       yield* Effect.forEach(
@@ -1527,6 +1605,14 @@ const make = Effect.gen(function* () {
         (key) =>
           key.startsWith(prefix)
             ? Cache.invalidate(assistantSegmentStateByTurnKey, key)
+            : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      yield* Effect.forEach(
+        generatedAttachmentKeys,
+        (key) =>
+          key.startsWith(prefix)
+            ? Cache.invalidate(generatedAttachmentsByTurnKey, key)
             : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
@@ -1795,8 +1881,43 @@ const make = Effect.gen(function* () {
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
           : undefined;
+      // Only provider-exposed reasoning summaries are projected to the UI.
+      // Raw `reasoning_text` can contain hidden chain-of-thought and remains
+      // intentionally private even when an adapter receives it.
+      const reasoningSummaryDelta =
+        event.type === "content.delta" && event.payload.streamKind === "reasoning_summary_text"
+          ? event.payload.delta
+          : undefined;
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
+
+      if (reasoningSummaryDelta && reasoningSummaryDelta.length > 0) {
+        const turnId = toTurnId(event.turnId);
+        const summary = yield* appendReasoningSummary(
+          thread.id,
+          turnId,
+          reasoningSummaryDelta,
+          now,
+        );
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: yield* providerCommandId(event, "reasoning-summary"),
+          threadId: thread.id,
+          activity: {
+            id: summary.activityId,
+            createdAt: summary.createdAt,
+            tone: "info",
+            kind: "reasoning.summary",
+            summary: "Thinking",
+            payload: {
+              detail: summary.text,
+              providerExposedSummary: true,
+            },
+            turnId: turnId ?? null,
+          },
+          createdAt: now,
+        });
+      }
 
       if (assistantDelta && assistantDelta.length > 0) {
         const turnId = toTurnId(event.turnId);
@@ -1887,6 +2008,17 @@ const make = Effect.gen(function* () {
       if (proposedPlanDelta && proposedPlanDelta.length > 0) {
         const planId = proposedPlanIdFromEvent(event, thread.id);
         yield* appendBufferedProposedPlan(planId, proposedPlanDelta, now);
+      }
+
+      if (event.type === "item.completed" && event.payload.attachments?.length) {
+        const generatedTurnId = toTurnId(event.turnId);
+        if (generatedTurnId) {
+          yield* appendGeneratedAttachmentsForTurn(
+            thread.id,
+            generatedTurnId,
+            event.payload.attachments,
+          );
+        }
       }
 
       const assistantCompletion =
@@ -1994,6 +2126,20 @@ const make = Effect.gen(function* () {
               }),
             { concurrency: 1 },
           ).pipe(Effect.asVoid);
+          if (assistantMessageIds.size === 0) {
+            const generatedAttachments = yield* takeGeneratedAttachmentsForTurn(thread.id, turnId);
+            if (generatedAttachments.length > 0) {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.message.assistant.complete",
+                commandId: yield* providerCommandId(event, "assistant-generated-image-complete"),
+                threadId: thread.id,
+                messageId: MessageId.make(`assistant:generated-image:${turnId}`),
+                attachments: [...generatedAttachments],
+                turnId,
+                createdAt: now,
+              });
+            }
+          }
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
 

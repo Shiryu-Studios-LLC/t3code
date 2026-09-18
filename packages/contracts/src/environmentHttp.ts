@@ -405,6 +405,7 @@ export const EnvironmentTextToSpeechSynthesizeInput = Schema.Struct({
   text: TrimmedNonEmptyString,
   voice: TrimmedNonEmptyString,
   rate: Schema.Number,
+  provider: Schema.optionalKey(Schema.Literals(["openai", "omniroute"])),
 });
 export type EnvironmentTextToSpeechSynthesizeInput =
   typeof EnvironmentTextToSpeechSynthesizeInput.Type;
@@ -415,6 +416,152 @@ export const EnvironmentTextToSpeechSynthesizeResult = Schema.Struct({
 });
 export type EnvironmentTextToSpeechSynthesizeResult =
   typeof EnvironmentTextToSpeechSynthesizeResult.Type;
+
+export const ShiryuGenCivitaiConfigStatus = Schema.Struct({
+  configured: Schema.Boolean,
+});
+export type ShiryuGenCivitaiConfigStatus = typeof ShiryuGenCivitaiConfigStatus.Type;
+
+export const ShiryuGenCivitaiUpdateConfigInput = Schema.Struct({
+  apiKey: Schema.String,
+});
+export type ShiryuGenCivitaiUpdateConfigInput = typeof ShiryuGenCivitaiUpdateConfigInput.Type;
+
+export const ShiryuGenCivitaiSearchInput = Schema.Struct({
+  query: Schema.String,
+  type: Schema.String,
+  baseModel: Schema.String,
+  sort: Schema.String,
+  limit: Schema.Number,
+  cursor: Schema.String,
+});
+export type ShiryuGenCivitaiSearchInput = typeof ShiryuGenCivitaiSearchInput.Type;
+
+export const ShiryuGenCivitaiModelSummary = Schema.Struct({
+  id: Schema.Number,
+  name: Schema.String,
+  type: Schema.String,
+  creatorName: Schema.NullOr(Schema.String),
+  versionId: Schema.NullOr(Schema.Number),
+  versionName: Schema.NullOr(Schema.String),
+  baseModel: Schema.NullOr(Schema.String),
+  trainedWords: Schema.Array(Schema.String),
+  previewImageUrl: Schema.NullOr(Schema.String),
+  downloadUrl: Schema.NullOr(Schema.String),
+  primaryFileName: Schema.NullOr(Schema.String),
+  primaryFileSizeBytes: Schema.Number,
+  primaryFileSha256: Schema.NullOr(Schema.String),
+  installSupported: Schema.Boolean,
+  installTarget: Schema.NullOr(Schema.String),
+  downloadCount: Schema.Number,
+  favoriteCount: Schema.Number,
+  rating: Schema.NullOr(Schema.Number),
+});
+export type ShiryuGenCivitaiModelSummary = typeof ShiryuGenCivitaiModelSummary.Type;
+
+export const ShiryuGenCivitaiSearchResult = Schema.Struct({
+  items: Schema.Array(ShiryuGenCivitaiModelSummary),
+  nextCursor: Schema.NullOr(Schema.String),
+});
+export type ShiryuGenCivitaiSearchResult = typeof ShiryuGenCivitaiSearchResult.Type;
+
+export const ShiryuGenInstalledModel = Schema.Struct({
+  modelId: Schema.Number,
+  versionId: Schema.Number,
+  modelName: Schema.String,
+  versionName: Schema.String,
+  type: Schema.String,
+  baseModel: Schema.NullOr(Schema.String),
+  fileName: Schema.String,
+  relativePath: Schema.String,
+  installTarget: Schema.String,
+  sha256: Schema.NullOr(Schema.String),
+  fileSizeBytes: Schema.Number,
+  installedAt: Schema.String,
+});
+export type ShiryuGenInstalledModel = typeof ShiryuGenInstalledModel.Type;
+
+export const ShiryuGenInstalledModelsResult = Schema.Struct({
+  items: Schema.Array(ShiryuGenInstalledModel),
+});
+export type ShiryuGenInstalledModelsResult = typeof ShiryuGenInstalledModelsResult.Type;
+
+export const ShiryuGenCivitaiInstallInput = Schema.Struct({
+  modelId: Schema.Number,
+  versionId: Schema.Number,
+});
+export type ShiryuGenCivitaiInstallInput = typeof ShiryuGenCivitaiInstallInput.Type;
+
+export const ShiryuGenCivitaiInstallResult = Schema.Struct({
+  installed: ShiryuGenInstalledModel,
+  replacedVersionId: Schema.NullOr(Schema.Number),
+});
+export type ShiryuGenCivitaiInstallResult = typeof ShiryuGenCivitaiInstallResult.Type;
+
+export const ShiryuGenCivitaiInstallTaskStatus = Schema.Literals([
+  "queued",
+  "downloading",
+  "verifying",
+  "installing",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+export type ShiryuGenCivitaiInstallTaskStatus = typeof ShiryuGenCivitaiInstallTaskStatus.Type;
+
+export const ShiryuGenCivitaiInstallTask = Schema.Struct({
+  id: Schema.String,
+  modelId: Schema.Number,
+  versionId: Schema.Number,
+  status: ShiryuGenCivitaiInstallTaskStatus,
+  bytesDownloaded: Schema.Number,
+  totalBytes: Schema.Number,
+  progress: Schema.NullOr(Schema.Number),
+  error: Schema.NullOr(Schema.String),
+  createdAt: Schema.String,
+  startedAt: Schema.NullOr(Schema.String),
+  finishedAt: Schema.NullOr(Schema.String),
+  installed: Schema.NullOr(ShiryuGenInstalledModel),
+  replacedVersionId: Schema.NullOr(Schema.Number),
+});
+export type ShiryuGenCivitaiInstallTask = typeof ShiryuGenCivitaiInstallTask.Type;
+
+export const ShiryuGenCivitaiInstallTasksResult = Schema.Struct({
+  tasks: Schema.Array(ShiryuGenCivitaiInstallTask),
+  activeCount: Schema.Number,
+  queuedCount: Schema.Number,
+  maxConcurrency: Schema.Number,
+});
+export type ShiryuGenCivitaiInstallTasksResult = typeof ShiryuGenCivitaiInstallTasksResult.Type;
+
+export const ShiryuGenCivitaiUninstallInput = Schema.Struct({
+  modelId: Schema.Number,
+});
+export type ShiryuGenCivitaiUninstallInput = typeof ShiryuGenCivitaiUninstallInput.Type;
+
+export const ShiryuGenCivitaiUninstallResult = Schema.Struct({
+  removed: Schema.Boolean,
+});
+export type ShiryuGenCivitaiUninstallResult = typeof ShiryuGenCivitaiUninstallResult.Type;
+
+export const ShiryuGenComfyUiRuntimeState = Schema.Literals([
+  "offline",
+  "starting",
+  "ready",
+  "failed",
+]);
+export type ShiryuGenComfyUiRuntimeState = typeof ShiryuGenComfyUiRuntimeState.Type;
+
+export const ShiryuGenComfyUiStatus = Schema.Struct({
+  endpoint: Schema.String,
+  reachable: Schema.Boolean,
+  nodeCount: Schema.Number,
+  deviceName: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+  runtimeState: ShiryuGenComfyUiRuntimeState,
+  managedByShiryuGen: Schema.Boolean,
+});
+export type ShiryuGenComfyUiStatus = typeof ShiryuGenComfyUiStatus.Type;
 
 export class EnvironmentMetadataHttpApi extends HttpApiGroup.make("metadata").add(
   HttpApiEndpoint.get("descriptor", "/.well-known/t3/environment", {
@@ -570,6 +717,80 @@ export class EnvironmentTextToSpeechHttpApi extends HttpApiGroup.make("textToSpe
   }).middleware(EnvironmentAuthenticatedAuth),
 ) {}
 
+export class EnvironmentShiryuGenHttpApi extends HttpApiGroup.make("shiryuGen")
+  .add(
+    HttpApiEndpoint.get("comfyUiStatus", "/api/shiryugen/comfyui/status", {
+      headers: OptionalBearerHeaders,
+      success: ShiryuGenComfyUiStatus,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpInternalServerError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("civitaiConfig", "/api/shiryugen/civitai/config", {
+      headers: OptionalBearerHeaders,
+      success: ShiryuGenCivitaiConfigStatus,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpInternalServerError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("updateCivitaiConfig", "/api/shiryugen/civitai/config", {
+      headers: OptionalBearerHeaders,
+      payload: ShiryuGenCivitaiUpdateConfigInput,
+      success: ShiryuGenCivitaiConfigStatus,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpInternalServerError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("searchCivitaiModels", "/api/shiryugen/civitai/models/search", {
+      headers: OptionalBearerHeaders,
+      payload: ShiryuGenCivitaiSearchInput,
+      success: ShiryuGenCivitaiSearchResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpInternalServerError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("installedCivitaiModels", "/api/shiryugen/civitai/models/installed", {
+      headers: OptionalBearerHeaders,
+      success: ShiryuGenInstalledModelsResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpInternalServerError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("installCivitaiModel", "/api/shiryugen/civitai/models/install", {
+      headers: OptionalBearerHeaders,
+      payload: ShiryuGenCivitaiInstallInput,
+      success: ShiryuGenCivitaiInstallResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpInternalServerError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "queueCivitaiModelInstall",
+      "/api/shiryugen/civitai/models/install/queue",
+      {
+        headers: OptionalBearerHeaders,
+        payload: ShiryuGenCivitaiInstallInput,
+        success: ShiryuGenCivitaiInstallTask,
+        error: [...EnvironmentScopedOperationErrors, EnvironmentHttpInternalServerError],
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("civitaiModelInstallTasks", "/api/shiryugen/civitai/models/install/tasks", {
+      headers: OptionalBearerHeaders,
+      success: ShiryuGenCivitaiInstallTasksResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpInternalServerError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("uninstallCivitaiModel", "/api/shiryugen/civitai/models/uninstall", {
+      headers: OptionalBearerHeaders,
+      payload: ShiryuGenCivitaiUninstallInput,
+      success: ShiryuGenCivitaiUninstallResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentHttpInternalServerError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 export class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
   .add(
     HttpApiEndpoint.post("linkProof", "/api/connect/link-proof", {
@@ -637,4 +858,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentTextToSpeechHttpApi)
+  .add(EnvironmentShiryuGenHttpApi)
   .add(EnvironmentConnectHttpApi) {}

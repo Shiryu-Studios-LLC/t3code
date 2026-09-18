@@ -1073,6 +1073,28 @@ export const DesktopTextToSpeechSynthesizeInputSchema = Schema.Struct({
 export type DesktopTextToSpeechSynthesizeInput =
   typeof DesktopTextToSpeechSynthesizeInputSchema.Type;
 
+const DesktopSystemSpeechSpeakInput = Schema.Struct({
+  action: Schema.Literal("speak"),
+  engine: Schema.optionalKey(Schema.Literals(["system", "kokoro"])),
+  text: Schema.String.check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(32768)),
+  voice: Schema.optionalKey(
+    Schema.String.check(Schema.isTrimmed())
+      .check(Schema.isNonEmpty())
+      .check(Schema.isMaxLength(200)),
+  ),
+  rate: Schema.Number.check(Schema.isBetween({ minimum: 0.25, maximum: 4 })),
+});
+const DesktopSystemSpeechControlInput = Schema.Struct({
+  action: Schema.Union([Schema.Literal("pause"), Schema.Literal("resume"), Schema.Literal("stop")]),
+});
+export const DesktopSystemSpeechInputSchema = Schema.Union([
+  DesktopSystemSpeechSpeakInput,
+  DesktopSystemSpeechControlInput,
+]);
+export type DesktopSystemSpeechInput = typeof DesktopSystemSpeechInputSchema.Type;
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   /**
@@ -1136,6 +1158,8 @@ export interface DesktopBridge {
     position?: { x: number; y: number },
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
+  /** Reveal a local file in the host file manager. Optional for older desktop shells. */
+  showItemInFolder?: (path: string) => Promise<boolean>;
   /**
    * Probe this desktop machine for installed remote-capable editor CLIs
    * (used for remote open-in-editor deep links). Optional: older desktop
@@ -1162,6 +1186,8 @@ export interface DesktopBridge {
    * bundle can continue to run inside an older desktop shell.
    */
   synthesizeSpeech?: (input: DesktopTextToSpeechSynthesizeInput) => Promise<Uint8Array>;
+  /** Linux desktop fallback used when Chromium exposes no system speech voices. */
+  systemSpeech?: (input: DesktopSystemSpeechInput) => Promise<void>;
   /**
    * Desktop-only preview surface. Present iff the renderer is hosted by the
    * Electron desktop build; web builds have `preview === undefined`.
@@ -1270,6 +1296,7 @@ export interface LocalApi {
   };
   shell: {
     openExternal: (url: string) => Promise<void>;
+    showItemInFolder?: (path: string) => Promise<boolean>;
   };
   contextMenu: {
     show: <T extends string>(

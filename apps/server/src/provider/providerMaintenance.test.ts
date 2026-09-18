@@ -297,8 +297,8 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       packageName: "@example/stable-native-package-tool",
       versionTag: "stable",
       update: {
-        command: "stable-native-package-tool update",
-        executable: "stable-native-package-tool",
+        command: `${nativePath} update`,
+        executable: nativePath,
         args: ["update"],
         lockKey: "stable-native-package-tool-native",
       },
@@ -390,9 +390,9 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           provider: driver("nativePackageTool"),
           packageName: "@example/native-package-tool",
           update: {
-            command: "native-package-tool update",
+            command: `${nativePackageToolPath} update`,
 
-            executable: "native-package-tool",
+            executable: nativePackageToolPath,
 
             args: ["update"],
 
@@ -427,9 +427,9 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           provider: driver("scopedPackageTool"),
           packageName: "@example/scoped-package-tool",
           update: {
-            command: "scoped-package-tool upgrade",
+            command: `${scopedPackageToolPath} upgrade`,
 
-            executable: "scoped-package-tool",
+            executable: scopedPackageToolPath,
 
             args: ["upgrade"],
 
@@ -485,7 +485,56 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     });
   });
 
-  it.effect("keeps npm updates for binaries symlinked into npm's global node_modules tree", () =>
+  it.effect("prefers an npm real target over an ambiguous native-looking user-local shim", () =>
+    Effect.gen(function* () {
+      const tempDir = yield* makeTempDir("t3-npm-native-shim-capabilities");
+      const prefix = NodePath.join(tempDir, ".local");
+      const binDir = NodePath.join(prefix, "bin");
+      const packageBinDir = NodePath.join(
+        prefix,
+        "lib",
+        "node_modules",
+        "@example",
+        "native-package-tool",
+        "bin",
+      );
+      NodeFS.mkdirSync(binDir, { recursive: true });
+      NodeFS.mkdirSync(packageBinDir, { recursive: true });
+      const packageBinPath = NodePath.join(packageBinDir, "native-package-tool.js");
+      const symlinkPath = NodePath.join(binDir, "native-package-tool");
+      NodeFS.writeFileSync(packageBinPath, "#!/usr/bin/env node\n");
+      NodeFS.chmodSync(packageBinPath, 0o755);
+      NodeFS.symlinkSync(packageBinPath, symlinkPath);
+
+      const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+        nativePackageToolUpdate,
+        {
+          binaryPath: "native-package-tool",
+          env: { PATH: binDir },
+        },
+      );
+
+      expect(capabilities).toEqual({
+        provider: driver("nativePackageTool"),
+        packageName: "@example/native-package-tool",
+        update: {
+          command: `npm install -g --prefix ${prefix} --allow-scripts=@example/native-package-tool @example/native-package-tool@latest`,
+          executable: "npm",
+          args: [
+            "install",
+            "-g",
+            "--prefix",
+            prefix,
+            "--allow-scripts=@example/native-package-tool",
+            "@example/native-package-tool@latest",
+          ],
+          lockKey: "npm-global",
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves the npm prefix for binaries symlinked into a global node_modules tree", () =>
     Effect.gen(function* () {
       const tempDir = yield* makeTempDir("t3-npm-capabilities");
       const binDir = NodePath.join(tempDir, "bin");
@@ -516,14 +565,15 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         provider: driver("packageTool"),
         packageName: "@example/package-tool",
         update: {
-          command:
-            "npm install -g --allow-scripts=@example/package-tool @example/package-tool@latest",
+          command: `npm install -g --prefix ${tempDir} --allow-scripts=@example/package-tool @example/package-tool@latest`,
 
           executable: "npm",
 
           args: [
             "install",
             "-g",
+            "--prefix",
+            tempDir,
             "--allow-scripts=@example/package-tool",
             "@example/package-tool@latest",
           ],

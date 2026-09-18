@@ -28,8 +28,8 @@ import {
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
-  makeManualOnlyProviderMaintenanceCapabilities,
-  makeStaticProviderMaintenanceResolver,
+  makePackageManagedProviderMaintenanceResolver,
+  normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
 import {
@@ -40,12 +40,23 @@ import {
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("grok");
-const UPDATE = makeStaticProviderMaintenanceResolver(
-  makeManualOnlyProviderMaintenanceCapabilities({
-    provider: DRIVER_KIND,
-    packageName: null,
-  }),
-);
+
+function isGrokNativeCommandPath(commandPath: string): boolean {
+  const normalized = normalizeCommandPath(commandPath);
+  return normalized.endsWith("/.grok/bin/grok") || normalized.endsWith("/.grok/bin/grok.exe");
+}
+
+const UPDATE = makePackageManagedProviderMaintenanceResolver({
+  provider: DRIVER_KIND,
+  npmPackageName: "@xai-official/grok",
+  homebrewFormula: null,
+  nativeUpdate: {
+    executable: "grok",
+    args: ["update"],
+    lockKey: "grok-native",
+    isCommandPath: isGrokNativeCommandPath,
+  },
+});
 
 export type GrokDriverEnv =
   | BackgroundPolicy.BackgroundPolicy

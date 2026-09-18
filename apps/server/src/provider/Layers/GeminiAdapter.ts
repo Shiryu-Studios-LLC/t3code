@@ -56,8 +56,8 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
     provider: ProviderDriverKind.make("gemini"),
     ...(options.instanceId ? { instanceId: options.instanceId } : {}),
     defaultModel: "gemini-2.5-flash",
-    runChat: ({ threadId, model, history }) =>
-      withMcpToolSet(threadId, (toolSet) =>
+    runChat: ({ threadId, model, history, cwd }) =>
+      withMcpToolSet(threadId, cwd, (toolSet) =>
         Effect.gen(function* () {
           if (!apiKey)
             return yield* new ProviderAdapterRequestError({
@@ -127,7 +127,6 @@ export const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
               const result = yield* Effect.promise(() =>
                 callMcpToolForModel(toolSet, functionCall.name, functionCall.args ?? {}),
               );
-              if (result.isError) allowToolCalls = false;
               responses.push({
                 functionResponse: {
                   name: functionCall.name,

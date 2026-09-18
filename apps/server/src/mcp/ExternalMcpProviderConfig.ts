@@ -36,7 +36,6 @@ export function externalMcpServersForAcp(threadId: ThreadId) {
           })),
         }
       : {
-          type: "stdio" as const,
           name: runtimeName(server),
           command: server.transport.command,
           args: [...server.transport.args],

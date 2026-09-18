@@ -1,3 +1,4 @@
+// @effect-diagnostics globalTimersInEffect:off globalFetchInEffect:off - Provider discovery uses the vendor HTTP boundary with an abort timeout.
 import {
   type NvidiaSettings,
   type ModelCapabilities,
@@ -41,50 +42,50 @@ export const DEFAULT_NVIDIA_MODEL_CAPABILITIES: ModelCapabilities = createModelC
 
 export const NVIDIA_MODEL_CATALOG: ReadonlyArray<ServerProviderModel> = [
   {
-    slug: "meta/llama-3.3-70b-instruct",
-    name: "Meta Llama 3.3 70B Instruct",
+    slug: "deepseek-ai/deepseek-v4-flash-0731",
+    name: "DeepSeek V4 Flash",
     isCustom: false,
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
   {
-    slug: "deepseek-ai/deepseek-r1",
-    name: "DeepSeek R1",
+    slug: "deepseek-ai/deepseek-v4-pro-0813",
+    name: "DeepSeek V4 Pro",
     isCustom: false,
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
   {
-    slug: "deepseek-ai/deepseek-v3",
-    name: "DeepSeek V3",
+    slug: "meta/llama-3.2-90b-vision-instruct",
+    name: "Meta Llama 3.2 90B Vision",
     isCustom: false,
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
   {
-    slug: "nvidia/llama-3.1-nemotron-70b-instruct",
-    name: "Llama 3.1 Nemotron 70B",
+    slug: "meta/llama-3.2-11b-vision-instruct",
+    name: "Meta Llama 3.2 11B Vision",
     isCustom: false,
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
   {
-    slug: "qwen/qwen2.5-coder-32b-instruct",
-    name: "Qwen 2.5 Coder 32B",
+    slug: "nvidia/nemotron-3-ultra-550b-a55b",
+    name: "Nemotron 3 Ultra",
     isCustom: false,
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
   {
-    slug: "mistralai/mistral-large-2-instruct",
-    name: "Mistral Large 2",
+    slug: "nvidia/nemotron-3-super-120b-a12b",
+    name: "Nemotron 3 Super",
     isCustom: false,
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
   {
-    slug: "meta/llama-3.1-405b-instruct",
-    name: "Meta Llama 3.1 405B Instruct",
+    slug: "nvidia/nemotron-3-nano-30b-a3b",
+    name: "Nemotron 3 Nano",
     isCustom: false,
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
   {
-    slug: "meta/llama-3.1-70b-instruct",
-    name: "Llama 3.1 70B Instruct",
+    slug: "openai/gpt-oss-120b",
+    name: "GPT OSS 120B",
     isCustom: false,
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
@@ -95,36 +96,37 @@ export const NVIDIA_MODEL_CATALOG: ReadonlyArray<ServerProviderModel> = [
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
   {
-    slug: "qwen/qwen3-next-80b-a3b-instruct",
-    name: "Qwen3 Next 80B",
-    isCustom: false,
-    capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
-  },
-  {
-    slug: "z-ai/glm4.7",
-    name: "GLM 4.7",
+    slug: "google/diffusiongemma-26b-a4b-it",
+    name: "Diffusion Gemma 26B",
     isCustom: false,
     capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
   },
 ];
 
 const NVIDIA_MODEL_ALIASES: Readonly<Record<string, string>> = {
-  "llama-3.3-70b": "meta/llama-3.3-70b-instruct",
-  "llama-3.3": "meta/llama-3.3-70b-instruct",
-  "llama-70b": "meta/llama-3.3-70b-instruct",
-  "llama-3.1-405b": "meta/llama-3.1-405b-instruct",
-  "llama-405b": "meta/llama-3.1-405b-instruct",
-  nemotron: "nvidia/llama-3.1-nemotron-70b-instruct",
-  "nemotron-70b": "nvidia/llama-3.1-nemotron-70b-instruct",
-  r1: "deepseek-ai/deepseek-r1",
-  "deepseek-r1": "deepseek-ai/deepseek-r1",
-  v3: "deepseek-ai/deepseek-v3",
-  "deepseek-v3": "deepseek-ai/deepseek-v3",
-  qwen: "qwen/qwen2.5-coder-32b-instruct",
-  "qwen-coder": "qwen/qwen2.5-coder-32b-instruct",
-  mistral: "mistralai/mistral-large-2-instruct",
-  "mistral-large": "mistralai/mistral-large-2-instruct",
-  "gpt-oss": "openai/gpt-oss-20b",
+  "llama-3.2-90b": "meta/llama-3.2-90b-vision-instruct",
+  "llama-3.2-11b": "meta/llama-3.2-11b-vision-instruct",
+  "llama-90b": "meta/llama-3.2-90b-vision-instruct",
+  "llama-11b": "meta/llama-3.2-11b-vision-instruct",
+  "llama-3.3-70b": "meta/llama-3.2-90b-vision-instruct",
+  "llama-3.3": "meta/llama-3.2-90b-vision-instruct",
+  "llama-70b": "meta/llama-3.2-90b-vision-instruct",
+  "llama-3.1-405b": "meta/llama-3.2-90b-vision-instruct",
+  "llama-405b": "meta/llama-3.2-90b-vision-instruct",
+  nemotron: "nvidia/nemotron-3-ultra-550b-a55b",
+  "nemotron-ultra": "nvidia/nemotron-3-ultra-550b-a55b",
+  "nemotron-super": "nvidia/nemotron-3-super-120b-a12b",
+  "nemotron-nano": "nvidia/nemotron-3-nano-30b-a3b",
+  "nemotron-70b": "nvidia/nemotron-3-ultra-550b-a55b",
+  r1: "deepseek-ai/deepseek-v4-pro-0813",
+  "deepseek-r1": "deepseek-ai/deepseek-v4-pro-0813",
+  v3: "deepseek-ai/deepseek-v4-flash-0731",
+  "deepseek-v3": "deepseek-ai/deepseek-v4-flash-0731",
+  "deepseek-v4": "deepseek-ai/deepseek-v4-flash-0731",
+  "deepseek-v4-flash": "deepseek-ai/deepseek-v4-flash-0731",
+  "deepseek-v4-pro": "deepseek-ai/deepseek-v4-pro-0813",
+  "gpt-oss": "openai/gpt-oss-120b",
+  "gpt-oss-120b": "openai/gpt-oss-120b",
   "gpt-oss-20b": "openai/gpt-oss-20b",
 };
 
@@ -146,6 +148,76 @@ export function resolveNvidiaApiKey(
     environment.NVIDIA_NIM_API_KEY?.trim() ??
     environment.NVAPI_KEY?.trim();
   return envKey && envKey.length > 0 ? envKey : undefined;
+}
+
+function isUsableNvidiaChatModel(modelId: string): boolean {
+  const lower = modelId.toLowerCase();
+  if (
+    lower.includes("embed") ||
+    lower.includes("guard") ||
+    lower.includes("reward") ||
+    lower.includes("detector") ||
+    lower.includes("parse") ||
+    lower.includes("nvclip") ||
+    lower.includes("deplot") ||
+    lower.includes("fuyu") ||
+    lower.includes("kosmos") ||
+    lower.includes("neva")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function formatModelDisplayName(modelId: string): string {
+  const parts = modelId.split("/");
+  const slug = parts.length > 1 ? parts[1]! : parts[0]!;
+  return slug
+    .split(/[-_]/)
+    .map((word) =>
+      word.length <= 3 ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1),
+    )
+    .join(" ");
+}
+
+export function fetchNvidiaRemoteModels(
+  apiKey: string,
+  endpoint: string,
+): Effect.Effect<ReadonlyArray<ServerProviderModel>> {
+  return Effect.gen(function* () {
+    const url = `${endpoint.replace(/\/+$/, "")}/models`;
+    const response = yield* Effect.tryPromise({
+      try: async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        try {
+          const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            signal: controller.signal,
+          });
+          if (!res.ok) return [];
+          const data = (await res.json()) as { data?: Array<{ id: string }> };
+          if (!Array.isArray(data?.data)) return [];
+          const remoteModels: ServerProviderModel[] = [];
+          for (const item of data.data) {
+            if (typeof item?.id === "string" && isUsableNvidiaChatModel(item.id)) {
+              remoteModels.push({
+                slug: item.id,
+                name: formatModelDisplayName(item.id),
+                isCustom: false,
+                capabilities: DEFAULT_NVIDIA_MODEL_CAPABILITIES,
+              });
+            }
+          }
+          return remoteModels;
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+      catch: () => [] as ServerProviderModel[],
+    });
+    return response;
+  }).pipe(Effect.catchCause(() => Effect.succeed([] as ServerProviderModel[])));
 }
 
 export function buildInitialNvidiaProviderSnapshot(
@@ -196,18 +268,17 @@ export const checkNvidiaProviderStatus = Effect.fn("checkNvidiaProviderStatus")(
   environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<ServerProviderDraft> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  const models = providerModelsFromSettings(
-    NVIDIA_MODEL_CATALOG,
-    nvidiaSettings.customModels,
-    DEFAULT_NVIDIA_MODEL_CAPABILITIES,
-  );
 
   if (!nvidiaSettings.enabled) {
     return buildServerProvider({
       presentation: NVIDIA_PRESENTATION,
       enabled: false,
       checkedAt,
-      models,
+      models: providerModelsFromSettings(
+        NVIDIA_MODEL_CATALOG,
+        nvidiaSettings.customModels,
+        DEFAULT_NVIDIA_MODEL_CAPABILITIES,
+      ),
       probe: {
         installed: false,
         version: null,
@@ -220,6 +291,21 @@ export const checkNvidiaProviderStatus = Effect.fn("checkNvidiaProviderStatus")(
 
   const apiKey = resolveNvidiaApiKey(nvidiaSettings, environment);
   const hasKey = Boolean(apiKey);
+  const endpoint = nvidiaSettings.apiEndpoint?.trim() || "https://integrate.api.nvidia.com/v1";
+
+  let baseCatalog = NVIDIA_MODEL_CATALOG;
+  if (hasKey && apiKey) {
+    const liveModels = yield* fetchNvidiaRemoteModels(apiKey, endpoint);
+    if (liveModels.length > 0) {
+      baseCatalog = liveModels;
+    }
+  }
+
+  const models = providerModelsFromSettings(
+    baseCatalog,
+    nvidiaSettings.customModels,
+    DEFAULT_NVIDIA_MODEL_CAPABILITIES,
+  );
 
   return buildServerProvider({
     presentation: NVIDIA_PRESENTATION,
@@ -263,3 +349,4 @@ export const enrichNvidiaSnapshot = (input: {
     Effect.asVoid,
   );
 };
+// @effect-diagnostics globalTimersInEffect:off globalFetchInEffect:off - Provider discovery uses the vendor HTTP boundary with an abort timeout.

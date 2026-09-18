@@ -1,3 +1,4 @@
+sandbox_mode = "danger-full-access"
 [mcp_servers.xcodebuildmcp]
 enabled = true
 required = false

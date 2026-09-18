@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setClientSettings: (settings) =>
     ipcRenderer.invoke(IpcChannels.SET_CLIENT_SETTINGS_CHANNEL, settings),
   synthesizeSpeech: (input) => ipcRenderer.invoke(IpcChannels.SYNTHESIZE_SPEECH_CHANNEL, input),
+  systemSpeech: (input) => ipcRenderer.invoke(IpcChannels.SYSTEM_SPEECH_CHANNEL, input),
   getConnectionCatalog: () => ipcRenderer.invoke(IpcChannels.GET_CONNECTION_CATALOG_CHANNEL),
   setConnectionCatalog: (catalog) =>
     ipcRenderer.invoke(IpcChannels.SET_CONNECTION_CATALOG_CHANNEL, catalog),
@@ -112,6 +113,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ...(position === undefined ? {} : { position }),
     }),
   openExternal: (url: string) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
+  showItemInFolder: (path: string) =>
+    ipcRenderer.invoke(IpcChannels.SHOW_ITEM_IN_FOLDER_CHANNEL, path),
   probeRemoteEditors: () => ipcRenderer.invoke(IpcChannels.PROBE_REMOTE_EDITORS_CHANNEL, undefined),
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {

@@ -1,3 +1,4 @@
+import { ImageGenerationDetails } from "./imageGenerationDetails.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -23,6 +24,14 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+
+export const GENERAL_CHAT_PROJECT_ID = ProjectId.make("t3-general-chat");
+export const GENERAL_CHAT_PROJECT_TITLE = "General Chat";
+export const GENERAL_CHAT_WORKSPACE_ROOT = "~/.t3/general-chat";
+
+export function isGeneralChatProjectId(projectId: ProjectId | string): boolean {
+  return projectId === GENERAL_CHAT_PROJECT_ID;
+}
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -189,6 +198,14 @@ export const ChatImageAttachment = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
   mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
   sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)),
+  /** Generated-image provenance. Omitted for ordinary user uploads. */
+  source: Schema.optional(Schema.Literal("generated")),
+  /** Original generator save path. The attachment store keeps its own durable preview copy. */
+  savedPath: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4096))),
+  /** Prompt/tool metadata used by the chat UI for regenerate/edit affordances. */
+  generationPrompt: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120_000))),
+  generationTool: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(255))),
+  generationDetails: Schema.optional(ImageGenerationDetails),
 });
 export type ChatImageAttachment = typeof ChatImageAttachment.Type;
 
@@ -788,6 +805,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
+  projectId: Schema.optional(ProjectId),
   title: Schema.optional(TrimmedNonEmptyString),
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   modelSelection: Schema.optional(ModelSelection),
@@ -994,6 +1012,16 @@ const ThreadSessionSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadMessageUserCompleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.user.complete"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  text: Schema.String,
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  createdAt: IsoDateTime,
+});
+
 const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   type: Schema.Literal("thread.message.assistant.delta"),
   commandId: CommandId,
@@ -1009,6 +1037,9 @@ const ThreadMessageAssistantCompleteCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   messageId: MessageId,
+  /** Optional final text. Omit to retain any streamed/delta text accumulated for this message. */
+  text: Schema.optional(Schema.String),
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.optional(TurnId),
   createdAt: IsoDateTime,
 });
@@ -1061,6 +1092,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
 
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
+  ThreadMessageUserCompleteCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
@@ -1226,6 +1258,7 @@ export const ThreadPinReorderedPayload = Schema.Struct({
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
+  projectId: Schema.optional(ProjectId),
   title: Schema.optional(TrimmedNonEmptyString),
   /** Intent marker consumed by the title-generation reactor. Keeping this on
       the existing event lets older clients safely ignore the new field. */

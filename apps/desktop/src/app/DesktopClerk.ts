@@ -135,7 +135,8 @@ export const make = Effect.gen(function* () {
         return yield* Effect.interrupt;
       }
 
-      yield* electronApp.on("second-instance", () => {
+      yield* electronApp.on("second-instance", (_event, argv: string[]) => {
+        if (argv.includes("--hidden")) return;
         void runPromise(
           Effect.gen(function* () {
             const mainWindow = yield* electronWindow.currentMainOrFirst;

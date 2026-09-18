@@ -6,7 +6,9 @@ import {
   EyeIcon,
   EyeOffIcon,
   InfoIcon,
+  LoaderIcon,
   PlusIcon,
+  RefreshCwIcon,
   StarIcon,
   XIcon,
 } from "lucide-react";
@@ -35,6 +37,8 @@ const CUSTOM_MODEL_PLACEHOLDER_BY_KIND: Partial<Record<ProviderDriverKind, strin
   [ProviderDriverKind.make("claudeAgent")]: "claude-sonnet-5",
   [ProviderDriverKind.make("cursor")]: "claude-sonnet-4-6",
   [ProviderDriverKind.make("opencode")]: "openai/gpt-5",
+  [ProviderDriverKind.make("omniroute")]: "auto/coding:free",
+  [ProviderDriverKind.make("ollama")]: "qwen3:8b",
 };
 
 interface ProviderModelsSectionProps {
@@ -62,6 +66,10 @@ interface ProviderModelsSectionProps {
   readonly favoriteModels: ReadonlyArray<string>;
   /** Explicit user-authored model ordering for this provider instance. */
   readonly modelOrder: ReadonlyArray<string>;
+  /** Optional callback to trigger live model resync. */
+  readonly onResyncModels?: (() => void) | undefined;
+  /** Indicates whether model resync is currently in-flight. */
+  readonly isResyncing?: boolean | undefined;
   /**
    * Commit the new custom-model list. Caller is responsible for routing the
    * write to the correct storage (legacy `settings.providers[kind]` vs.
@@ -92,6 +100,8 @@ export function ProviderModelsSection({
   hiddenModels,
   favoriteModels,
   modelOrder,
+  onResyncModels,
+  isResyncing = false,
   onChange,
   onHiddenModelsChange,
   onFavoriteModelsChange,
@@ -186,9 +196,30 @@ export function ProviderModelsSection({
 
   return (
     <div>
-      <div className="text-xs font-medium text-foreground">Models</div>
-      <div className="mt-1 text-xs text-muted-foreground">
-        {models.length} model{models.length === 1 ? "" : "s"} available.
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-xs font-medium text-foreground">Models</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            {models.length} model{models.length === 1 ? "" : "s"} available.
+          </div>
+        </div>
+        {onResyncModels ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={isResyncing}
+            className="h-7 gap-1.5 px-2 text-xs"
+            onClick={onResyncModels}
+          >
+            {isResyncing ? (
+              <LoaderIcon className="size-3 animate-spin text-muted-foreground" />
+            ) : (
+              <RefreshCwIcon className="size-3" />
+            )}
+            Resync Models
+          </Button>
+        ) : null}
       </div>
       <div ref={listRef} className="mt-2 max-h-40 overflow-y-auto pb-1">
         {orderedModels.map((model, index) => {

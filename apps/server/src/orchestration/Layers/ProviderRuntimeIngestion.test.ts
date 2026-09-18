@@ -1033,6 +1033,67 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("projects provider-exposed reasoning summaries without projecting raw reasoning text", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-reasoning-summary");
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-hidden"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: {
+        streamKind: "reasoning_text",
+        delta: "private raw reasoning",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-summary-1"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: {
+        streamKind: "reasoning_summary_text",
+        delta: "Checked the constraints. ",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reasoning-summary-2"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId,
+      turnId,
+      payload: {
+        streamKind: "reasoning_summary_text",
+        delta: "Selected the safe path.",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity) =>
+          activity.kind === "reasoning.summary" &&
+          typeof (activity.payload as { detail?: unknown } | null)?.detail === "string" &&
+          (activity.payload as { detail: string }).detail.includes("Selected the safe path."),
+      ),
+    );
+    const summaries = thread.activities.filter((activity) => activity.kind === "reasoning.summary");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.summary).toBe("Thinking");
+    expect(summaries[0]?.payload).toMatchObject({
+      detail: "Checked the constraints. Selected the safe path.",
+      providerExposedSummary: true,
+    });
+    expect(JSON.stringify(thread.activities)).not.toContain("private raw reasoning");
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

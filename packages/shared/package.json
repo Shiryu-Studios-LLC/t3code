@@ -226,6 +226,10 @@
     "./usageFormat": {
       "types": "./src/usageFormat.ts",
       "import": "./src/usageFormat.ts"
+    },
+    "./imageGenerationProfiles": {
+      "types": "./src/imageGenerationProfiles.ts",
+      "import": "./src/imageGenerationProfiles.ts"
     }
   },
   "scripts": {

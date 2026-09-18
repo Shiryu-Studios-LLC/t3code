@@ -9,6 +9,7 @@ import {
   isCollapsedCursorAdjacentToInlineToken,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
+  resolveDirectLocalImageRequest,
 } from "./composer-logic";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
@@ -66,6 +67,88 @@ describe("composerSubmissionIntentForEnter", () => {
         isDraftThread: false,
       }),
     ).toBe("foreground");
+  });
+});
+
+describe("resolveDirectLocalImageRequest", () => {
+  it("routes /image directly regardless of the preference setting", () => {
+    expect(
+      resolveDirectLocalImageRequest({
+        text: "/image a sleek modern car",
+        preferLocalImageGeneration: false,
+        hasGeneratedImage: false,
+      }),
+    ).toEqual({
+      prompt: "a sleek modern car",
+      source: "slash",
+      usePreviousImage: false,
+    });
+  });
+
+  it("routes natural image prompts locally only when preferred", () => {
+    expect(
+      resolveDirectLocalImageRequest({
+        text: "Create an image of a sleek modern car",
+        preferLocalImageGeneration: true,
+        hasGeneratedImage: false,
+      }),
+    ).toEqual({
+      prompt: "Create an image of a sleek modern car",
+      source: "natural",
+      usePreviousImage: false,
+    });
+    expect(
+      resolveDirectLocalImageRequest({
+        text: "Create an image of a sleek modern car",
+        preferLocalImageGeneration: false,
+        hasGeneratedImage: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("routes visual character creation locally even when the prompt never says image", () => {
+    expect(
+      resolveDirectLocalImageRequest({
+        text: "can you create me a naked Kitsune Character in a very sexy pose",
+        preferLocalImageGeneration: true,
+        hasGeneratedImage: false,
+      }),
+    ).toEqual({
+      prompt: "can you create me a naked Kitsune Character in a very sexy pose",
+      source: "natural",
+      usePreviousImage: false,
+    });
+  });
+
+  it("does not hijack coding creation requests that mention a character", () => {
+    expect(
+      resolveDirectLocalImageRequest({
+        text: "create me a Character class in TypeScript for the game",
+        preferLocalImageGeneration: true,
+        hasGeneratedImage: false,
+      }),
+    ).toBeNull();
+    expect(
+      resolveDirectLocalImageRequest({
+        text: "create me a settings page for T3 Studio",
+        preferLocalImageGeneration: true,
+        hasGeneratedImage: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("treats image-edit follow-ups as local img2img when a generated image exists", () => {
+    expect(
+      resolveDirectLocalImageRequest({
+        text: "make it red",
+        preferLocalImageGeneration: true,
+        hasGeneratedImage: true,
+      }),
+    ).toEqual({
+      prompt: "make it red",
+      source: "edit",
+      usePreviousImage: true,
+    });
   });
 });
 
@@ -411,7 +494,17 @@ describe("parseStandaloneComposerSlashCommand", () => {
     expect(parseStandaloneComposerSlashCommand("/default")).toBe("default");
   });
 
-  it("ignores slash commands with extra message text", () => {
+  it("parses T3-owned navigation commands", () => {
+    expect(parseStandaloneComposerSlashCommand("/new")).toBe("new");
+    expect(parseStandaloneComposerSlashCommand("/plugins")).toBe("plugins");
+    expect(parseStandaloneComposerSlashCommand("/skills")).toBe("skills");
+    expect(parseStandaloneComposerSlashCommand("/project")).toBe("project");
+    expect(parseStandaloneComposerSlashCommand("/model")).toBe("model");
+    expect(parseStandaloneComposerSlashCommand("/help")).toBe("help");
+  });
+
+  it("ignores provider commands and slash commands with extra message text", () => {
     expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+    expect(parseStandaloneComposerSlashCommand("/provider-command")).toBeNull();
   });
 });

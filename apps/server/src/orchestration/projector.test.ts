@@ -703,6 +703,85 @@ describe("orchestration projector", () => {
     expect(thread?.latestTurn?.turnId).toBe("turn-1");
   });
 
+  it("rewinds non-checkpointed General Chat messages by conversational turns", async () => {
+    const createdAt = "2026-02-25T12:00:00.000Z";
+    const model = createEmptyReadModel(createdAt);
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-general-chat",
+          occurredAt: createdAt,
+          commandId: "cmd-create-general-chat",
+          payload: {
+            threadId: "thread-general-chat",
+            projectId: "t3-general-chat",
+            title: "General Chat",
+            modelSelection: { provider: ProviderDriverKind.make("nvidia"), model: "deepseek" },
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const message = (
+      sequence: number,
+      id: string,
+      role: "user" | "assistant",
+      text: string,
+      turnId: string | null,
+    ): OrchestrationEvent =>
+      makeEvent({
+        sequence,
+        type: "thread.message-sent",
+        aggregateKind: "thread",
+        aggregateId: "thread-general-chat",
+        occurredAt: `2026-02-25T12:00:0${sequence}.000Z`,
+        commandId: `cmd-${id}`,
+        payload: {
+          threadId: "thread-general-chat",
+          messageId: id,
+          role,
+          text,
+          turnId,
+          streaming: false,
+          createdAt: `2026-02-25T12:00:0${sequence}.000Z`,
+          updatedAt: `2026-02-25T12:00:0${sequence}.000Z`,
+        },
+      });
+    const events: ReadonlyArray<OrchestrationEvent> = [
+      message(2, "user-1", "user", "first prompt", null),
+      message(3, "assistant-1", "assistant", "first answer", "turn-1"),
+      message(4, "user-2", "user", "second prompt", null),
+      message(5, "assistant-2", "assistant", "second answer", "turn-2"),
+      makeEvent({
+        sequence: 6,
+        type: "thread.reverted",
+        aggregateKind: "thread",
+        aggregateId: "thread-general-chat",
+        occurredAt: "2026-02-25T12:00:06.000Z",
+        commandId: "cmd-rewind-general-chat",
+        payload: { threadId: "thread-general-chat", turnCount: 1 },
+      }),
+    ];
+    const afterRevert = await events.reduce<Promise<ReturnType<typeof createEmptyReadModel>>>(
+      (statePromise, event) =>
+        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+      Promise.resolve(afterCreate),
+    );
+
+    expect(afterRevert.threads[0]?.messages.map((entry) => entry.id)).toEqual([
+      "user-1",
+      "assistant-1",
+    ]);
+  });
+
   it("does not fallback-retain messages tied to removed turn IDs", async () => {
     const createdAt = "2026-02-26T12:00:00.000Z";
     const model = createEmptyReadModel(createdAt);

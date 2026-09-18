@@ -44,7 +44,11 @@ export function resolveProviderSkillSourceKind(
   skill: Pick<ServerProviderSkill, "path" | "scope">,
 ): ProviderSkillSourceKind {
   const normalizedPath = normalizePathSeparators(skill.path);
-  if (normalizedPath.includes("/.codex/plugins/") || normalizedPath.includes("/.agents/plugins/")) {
+  if (
+    normalizedPath.startsWith("t3://skills/") ||
+    normalizedPath.includes("/.codex/plugins/") ||
+    normalizedPath.includes("/.agents/plugins/")
+  ) {
     return "app";
   }
 

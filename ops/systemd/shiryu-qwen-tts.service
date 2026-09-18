@@ -1,0 +1,16 @@
+[Unit]
+Description=Shiryu Studios shared Qwen3-TTS natural voice service
+After=graphical-session.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/uv run --quiet --python 3.12 --with qwen-tts --with soundfile /mnt/Development/ShiryuGen/apps/desktop/prod-resources/qwen3-tts/qwen3_tts.py --server-port 37832
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=HF_HOME=%h/.cache/huggingface
+Environment=SHIRYU_QWEN_TTS_IDLE_UNLOAD_SECONDS=300
+
+[Install]
+WantedBy=default.target

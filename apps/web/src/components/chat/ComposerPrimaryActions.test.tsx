@@ -65,7 +65,7 @@ function renderStandaloneStop() {
   );
 }
 
-function renderRunningActions(showSendWhileRunning: boolean, hasSendableContent: boolean) {
+function renderRunningActions(queuedMessageCount: number, hasSendableContent: boolean) {
   return renderToStaticMarkup(
     createElement(ComposerPrimaryActions, {
       compact: true,
@@ -79,9 +79,11 @@ function renderRunningActions(showSendWhileRunning: boolean, hasSendableContent:
       isEnvironmentUnavailable: false,
       isPreparingWorktree: false,
       hasSendableContent,
-      showSendWhileRunning,
+      queuedMessageCount,
       onPreviousPendingQuestion: () => {},
       onInterrupt: () => {},
+      onQueue: () => {},
+      onSteer: () => {},
       onImplementPlanInNewThread: () => {},
     }),
   );
@@ -245,26 +247,28 @@ describe("ComposerPrimaryActions", () => {
     expect(markup).toContain("bg-message-action text-message-action-foreground");
   });
 
-  it("only renders stop while running when Enter-to-send is available", () => {
-    const markup = renderRunningActions(false, true);
+  it("renders explicit queue and steer actions beside stop while running", () => {
+    const markup = renderRunningActions(0, true);
 
     expect(markup).toContain('aria-label="Stop generation"');
+    expect(markup).toContain('aria-label="Queue message"');
+    expect(markup).toContain('aria-label="Steer active turn"');
     expect(markup).not.toContain('aria-label="Send message"');
   });
 
-  it("renders send alongside stop while running when Enter-to-send is unavailable", () => {
-    const markup = renderRunningActions(true, true);
+  it("shows the existing queued-message count in the running action", () => {
+    const markup = renderRunningActions(2, true);
 
-    expect(markup).toContain('aria-label="Stop generation"');
-    expect(markup).toContain('aria-label="Send message"');
-    expect(markup).toContain('type="submit"');
-    expect(markup).toContain("size-9 sm:size-8");
+    expect(markup).toContain("Queue (2)");
   });
 
-  it("keeps stop as the only action while running with an empty composer", () => {
-    const markup = renderRunningActions(true, false);
+  it("shows queued count beside stop while running with an empty composer", () => {
+    const markup = renderRunningActions(2, false);
 
     expect(markup).toContain('aria-label="Stop generation"');
-    expect(markup).not.toContain('aria-label="Send message"');
+    expect(markup).toContain('aria-label="Queued message count"');
+    expect(markup).toContain("2 queued");
+    expect(markup).not.toContain('aria-label="Queue message"');
+    expect(markup).not.toContain('aria-label="Steer active turn"');
   });
 });

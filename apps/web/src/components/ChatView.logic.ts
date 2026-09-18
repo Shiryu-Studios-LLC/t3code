@@ -1,8 +1,8 @@
 import {
   type EnvironmentId,
-  isProviderDriverKind,
   ProjectId,
   type MessageId,
+  type LocalImageGenerateInput,
   type ModelSelection,
   type ProviderDriverKind,
   type ServerProvider,
@@ -14,7 +14,6 @@ import {
 import { type ChatMessage, type SessionPhase, type Thread, type ThreadShell } from "../types";
 import {
   type ComposerAttachment,
-  type ComposerImageAttachment,
   type DraftThreadState,
   isComposerImageAttachment,
 } from "../composerDraftStore";
@@ -36,6 +35,28 @@ export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
 export const ENVIRONMENT_RECONNECT_WARNING_GRACE_MS = 2_000;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
+
+export function buildGeneratedImageEditInput(input: {
+  readonly threadId: ThreadId;
+  readonly attachmentId: string;
+  readonly instruction: string;
+}): LocalImageGenerateInput | null {
+  const prompt = input.instruction.trim();
+  if (!prompt) return null;
+  return {
+    threadId: input.threadId,
+    prompt,
+    requestText: `Edit image: ${prompt}`,
+    referenceAttachmentId: input.attachmentId,
+  };
+}
+
+export function resolveCharacterGenerationThreadModelSelection(input: {
+  readonly current: ModelSelection;
+  readonly fallback: ModelSelection;
+}): ModelSelection {
+  return input.current.model.trim().length > 0 ? input.current : input.fallback;
+}
 
 export function shouldDockDraftHeroForSubmission(input: {
   isDraftHeroState: boolean;
@@ -540,7 +561,100 @@ export async function waitForStartedServerThread(
   });
 }
 
+export function resolveEditRewindTurnCount(input: {
+  readonly isGeneralChat: boolean;
+  readonly conversationTurnCount?: number;
+  readonly checkpointTurnCount?: number;
+}): number | undefined {
+  // General Chat has no filesystem checkpoints, so editing a sent message must
+  // rewind by conversational user-turn count. Project/checkpoint inference can
+  // still produce a number from provider turn metadata, but preferring that
+  // value keeps the very message being edited (first message => turn 1) and
+  // causes the UI to wait forever for a removal that cannot happen.
+  if (input.isGeneralChat) {
+    return input.conversationTurnCount ?? input.checkpointTurnCount;
+  }
+  return input.checkpointTurnCount;
+}
+
+export type ThreadMessageRemovalResult =
+  | { readonly status: "removed" }
+  | { readonly status: "failed"; readonly detail: string }
+  | { readonly status: "timeout" };
+
+export async function waitForThreadMessageRemoved(
+  threadRef: ScopedThreadRef,
+  messageId: MessageId,
+  options: {
+    readonly timeoutMs?: number;
+    readonly ignoredFailureActivityIds?: ReadonlySet<string>;
+  } = {},
+): Promise<ThreadMessageRemovalResult> {
+  const threadAtom = environmentThreadDetails.detailAtom(threadRef);
+  const getThread = () => appAtomRegistry.get(threadAtom);
+  const ignoredFailureActivityIds = options.ignoredFailureActivityIds ?? new Set<string>();
+  const messageIsGone = (thread: Thread | null | undefined) =>
+    thread != null && !thread.messages.some((message) => message.id === messageId);
+  const newRevertFailure = (thread: Thread | null | undefined): string | null => {
+    const activity = thread?.activities.findLast(
+      (entry) =>
+        entry.kind === "checkpoint.revert.failed" &&
+        !ignoredFailureActivityIds.has(String(entry.id)),
+    );
+    if (!activity) return null;
+    const payload = activity.payload;
+    if (
+      typeof payload === "object" &&
+      payload !== null &&
+      "detail" in payload &&
+      typeof (payload as { readonly detail?: unknown }).detail === "string"
+    ) {
+      return (payload as { readonly detail: string }).detail;
+    }
+    return activity.summary || "Conversation rewind failed.";
+  };
+
+  const current = getThread();
+  if (messageIsGone(current)) {
+    return { status: "removed" };
+  }
+  const currentFailure = newRevertFailure(current);
+  if (currentFailure) {
+    return { status: "failed", detail: currentFailure };
+  }
+
+  return await new Promise<ThreadMessageRemovalResult>((resolve) => {
+    let settled = false;
+    let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
+    const finish = (result: ThreadMessageRemovalResult) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId !== null) globalThis.clearTimeout(timeoutId);
+      unsubscribe();
+      resolve(result);
+    };
+
+    const inspect = (thread: Thread | null | undefined) => {
+      if (messageIsGone(thread)) {
+        finish({ status: "removed" });
+        return;
+      }
+      const detail = newRevertFailure(thread);
+      if (detail) finish({ status: "failed", detail });
+    };
+    const unsubscribe = appAtomRegistry.subscribe(threadAtom, inspect);
+    inspect(getThread());
+    if (settled) return;
+
+    timeoutId = globalThis.setTimeout(
+      () => finish({ status: "timeout" }),
+      options.timeoutMs ?? 15_000,
+    );
+  });
+}
+
 export interface LocalDispatchSnapshot {
+  threadId: ThreadId | null;
   startedAt: string;
   preparingWorktree: boolean;
   submissionIntent: ComposerSubmissionIntent;
@@ -564,6 +678,7 @@ export function createLocalDispatchSnapshot(
   const session = activeThread?.session ?? null;
   const latestUserMessage = activeThread?.messages.findLast((message) => message.role === "user");
   return {
+    threadId: activeThread?.id ?? null,
     startedAt: new Date().toISOString(),
     preparingWorktree: Boolean(options?.preparingWorktree),
     submissionIntent: options?.submissionIntent ?? "foreground",
@@ -579,6 +694,7 @@ export function createLocalDispatchSnapshot(
 
 export function hasServerAcknowledgedLocalDispatch(input: {
   localDispatch: LocalDispatchSnapshot | null;
+  currentThreadId?: ThreadId | null;
   phase: SessionPhase;
   latestTurn: Thread["latestTurn"] | null;
   latestUserMessageId: ChatMessage["id"] | null;
@@ -589,6 +705,12 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 }): boolean {
   if (!input.localDispatch) {
     return false;
+  }
+  if (
+    input.currentThreadId !== undefined &&
+    input.localDispatch.threadId !== input.currentThreadId
+  ) {
+    return true;
   }
   if (input.hasPendingApproval || input.hasPendingUserInput || Boolean(input.threadError)) {
     return true;

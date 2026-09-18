@@ -1,5 +1,5 @@
 import { memo, type PointerEventHandler } from "react";
-import { ChevronDownIcon, ChevronLeftIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronLeftIcon, ImageIcon } from "lucide-react";
 import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { StageBackdropButtonArt, useSidebarStageBackdropVariant } from "../SidebarStageBackdrop";
@@ -28,11 +28,12 @@ interface ComposerPrimaryActionsProps {
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
   preserveComposerFocusOnPointerDown?: boolean;
-  /** Enter-to-send is disabled on mobile viewports, where stop would otherwise
-   * be the only primary action and a running turn could not be steered. */
-  showSendWhileRunning?: boolean;
+  queuedMessageCount?: number;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
+  onQueue?: () => void;
+  onSteer?: () => void;
+  onGenerateImage?: () => void;
   onImplementPlanInNewThread: () => void;
 }
 
@@ -71,9 +72,12 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isPreparingWorktree,
   hasSendableContent,
   preserveComposerFocusOnPointerDown = false,
-  showSendWhileRunning = false,
+  queuedMessageCount = 0,
   onPreviousPendingQuestion,
   onInterrupt,
+  onQueue = () => {},
+  onSteer = () => {},
+  onGenerateImage,
   onImplementPlanInNewThread,
 }: ComposerPrimaryActionsProps) {
   const pointerFocusProps = preserveComposerFocusOnPointerDown
@@ -92,7 +96,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
         "flex cursor-pointer items-center justify-center rounded-full bg-destructive/90 text-white shadow-xs shadow-destructive/24 inset-shadow-[0_1px_--theme(--color-white/16%)] transition-all duration-150 hover:bg-destructive hover:scale-105 active:inset-shadow-[0_1px_--theme(--color-black/8%)] active:shadow-none",
         insidePendingAction
           ? "size-8 sm:size-7"
-          : showSendWhileRunning && hasSendableContent
+          : hasSendableContent
             ? "size-9 sm:size-8"
             : "size-8 sm:h-8 sm:w-8",
       )}
@@ -271,13 +275,63 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   );
 
   if (!isRunning) {
-    return sendButton;
+    return (
+      <div className="flex items-center justify-end gap-1.5">
+        {onGenerateImage ? (
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            className="rounded-full"
+            {...pointerFocusProps}
+            disabled={isConnecting || isSendBusy}
+            onClick={onGenerateImage}
+            aria-label="Generate image locally"
+            title="Generate Image"
+          >
+            <ImageIcon className="size-4" />
+          </Button>
+        ) : null}
+        {sendButton}
+      </div>
+    );
   }
 
   return (
-    <>
+    <div className="flex items-center justify-end gap-1.5">
       {renderStopGenerationButton(false)}
-      {showSendWhileRunning && hasSendableContent ? sendButton : null}
-    </>
+      {queuedMessageCount > 0 && !hasSendableContent ? (
+        <span className="text-secondary-label px-1 text-xs" aria-label="Queued message count">
+          {queuedMessageCount} queued
+        </span>
+      ) : null}
+      {hasSendableContent ? (
+        <>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-9 rounded-full px-3 sm:h-8"
+            {...pointerFocusProps}
+            disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
+            onClick={onQueue}
+            aria-label="Queue message"
+          >
+            {queuedMessageCount > 0 ? `Queue (${queuedMessageCount})` : "Queue"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-9 rounded-full bg-message-action px-3 text-message-action-foreground hover:bg-message-action-hover sm:h-8"
+            {...pointerFocusProps}
+            disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
+            onClick={onSteer}
+            aria-label="Steer active turn"
+          >
+            Steer
+          </Button>
+        </>
+      ) : null}
+    </div>
   );
 });

@@ -234,6 +234,7 @@ More documentation lives in [`docs/`](./docs):
 - [Remote access](./docs/user/remote-access.md)
 - [Keeping clients and servers in sync](./docs/user/updating.md)
 - [Source control integrations](./docs/user/source-control.md)
+- [Plugins, apps, and skills](./docs/user/plugins-and-integrations.md)
 - Multiple accounts: [Codex](./docs/user/providers-codex.md) and [Claude](./docs/user/providers-claude.md)
 - [Background service](./docs/user/background-service.md)
 - [Internal architecture](./docs/internals/overview.md)

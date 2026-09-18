@@ -2,8 +2,94 @@ import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+export type ComposerSlashCommand =
+  | "model"
+  | "plan"
+  | "default"
+  | "new"
+  | "project"
+  | "plugins"
+  | "skills"
+  | "settings"
+  | "image"
+  | "help";
 export type ComposerSubmissionIntent = "foreground" | "background";
+export type ComposerTurnDelivery = "auto" | "steer" | "queue";
+
+export interface ComposerSlashCommandDefinition {
+  readonly command: ComposerSlashCommand;
+  readonly label: string;
+  readonly description: string;
+  readonly requiresPlanMode?: boolean;
+}
+
+export const T3_COMPOSER_SLASH_COMMANDS: ReadonlyArray<ComposerSlashCommandDefinition> = [
+  { command: "model", label: "/model", description: "Switch response model for this thread" },
+  { command: "new", label: "/new", description: "Start a new General Chat" },
+  { command: "project", label: "/project", description: "Choose a project for a new project chat" },
+  { command: "plugins", label: "/plugins", description: "Open Plugins & Apps settings" },
+  { command: "skills", label: "/skills", description: "Open T3 Skills settings" },
+  { command: "settings", label: "/settings", description: "Open T3 Studio settings" },
+  { command: "image", label: "/image", description: "Generate an image locally with T3" },
+  { command: "help", label: "/help", description: "Show T3 slash command help" },
+  {
+    command: "plan",
+    label: "/plan",
+    description: "Switch this thread into plan mode",
+    requiresPlanMode: true,
+  },
+  {
+    command: "default",
+    label: "/default",
+    description: "Switch this thread back to normal build mode",
+    requiresPlanMode: true,
+  },
+];
+
+export interface DirectLocalImageRequest {
+  readonly prompt: string;
+  readonly source: "slash" | "natural" | "edit";
+  readonly usePreviousImage: boolean;
+}
+
+const NATURAL_IMAGE_CREATE_PATTERN =
+  /\b(?:create|generate|draw|render|design|produce)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|illustration|artwork|render|logo|poster|wallpaper)\b|\bmake\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|illustration|artwork|render|logo|poster|wallpaper)\b|^(?:image|picture|photo)\s+of\b/i;
+const NATURAL_VISUAL_SUBJECT_CREATE_PATTERN =
+  /\b(?:create|generate|draw|render|design|produce|make)\s+(?:me\s+)?(?:an?\s+)?(?=[\s\S]{0,140}\b(?:character|portrait|avatar|pose|scene|creature|mascot|concept\s+art|kitsune|furry|anthro|anthropomorphic|dog|canine|fox|wolf|cat|feline|monster)\b)/i;
+const NON_IMAGE_CREATION_CONTEXT_PATTERN =
+  /\b(?:typescript|javascript|python|rust|golang|c\+\+|c#|class|function|method|component|page|route|api|endpoint|database|schema|code|script|app|application|website|frontend|backend|settings|form|button|plugin|service|server|test|unity|unreal|blender|project|repository|repo)\b/i;
+const IMAGE_EDIT_FOLLOW_UP_PATTERN =
+  /^(?:please\s+)?(?:make|change|turn|edit|adjust|modify|recolor|restyle|add|remove|replace)\s+(?:it|this|that|the\s+(?:image|picture|photo)|(?:a|an|the)\s+)/i;
+
+export function resolveDirectLocalImageRequest(input: {
+  readonly text: string;
+  readonly preferLocalImageGeneration: boolean;
+  readonly hasGeneratedImage: boolean;
+}): DirectLocalImageRequest | null {
+  const text = input.text.trim();
+  const slash = /^\/image(?:\s+([\s\S]+))?$/i.exec(text);
+  if (slash) {
+    const prompt = slash[1]?.trim() ?? "";
+    if (!prompt) return null;
+    return {
+      prompt,
+      source: "slash",
+      usePreviousImage: input.hasGeneratedImage && IMAGE_EDIT_FOLLOW_UP_PATTERN.test(prompt),
+    };
+  }
+  if (!input.preferLocalImageGeneration || !text) return null;
+  if (
+    NATURAL_IMAGE_CREATE_PATTERN.test(text) ||
+    (NATURAL_VISUAL_SUBJECT_CREATE_PATTERN.test(text) &&
+      !NON_IMAGE_CREATION_CONTEXT_PATTERN.test(text))
+  ) {
+    return { prompt: text, source: "natural", usePreviousImage: false };
+  }
+  if (input.hasGeneratedImage && IMAGE_EDIT_FOLLOW_UP_PATTERN.test(text)) {
+    return { prompt: text, source: "edit", usePreviousImage: true };
+  }
+  return null;
+}
 
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
@@ -268,16 +354,12 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   };
 }
 
-export function parseStandaloneComposerSlashCommand(
-  text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
-  const match = /^\/(plan|default)\s*$/i.exec(text.trim());
-  if (!match) {
-    return null;
-  }
+export function parseStandaloneComposerSlashCommand(text: string): ComposerSlashCommand | null {
+  const match = /^\/([a-z-]+)\s*$/i.exec(text.trim());
+  if (!match) return null;
   const command = match[1]?.toLowerCase();
-  if (command === "plan") return "plan";
-  return "default";
+  const definition = T3_COMPOSER_SLASH_COMMANDS.find((entry) => entry.command === command);
+  return definition?.command ?? null;
 }
 
 export function replaceTextRange(

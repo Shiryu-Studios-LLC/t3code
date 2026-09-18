@@ -6,7 +6,7 @@ import {
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { ChevronRightIcon, SearchIcon } from "lucide-react";
+import { ChevronRightIcon, LoaderIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
 import {
@@ -34,7 +34,11 @@ import {
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
-import { TooltipProvider } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
+import { Button } from "../ui/button";
+import { usePrimaryEnvironmentId } from "~/state/environments";
+import { serverEnvironment } from "~/state/server";
+import { useAtomCommand } from "~/state/use-atom-command";
 import {
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
@@ -132,6 +136,27 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     [providedKeybindings],
   );
   const updateSettings = useUpdateClientSettings();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders);
+
+  const handleResyncModels = useCallback(
+    async (event: React.MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (isRefreshing || !primaryEnvironmentId) return;
+      setIsRefreshing(true);
+      try {
+        await refreshServerProviders({
+          environmentId: primaryEnvironmentId,
+          input: {},
+        });
+      } finally {
+        setIsRefreshing(false);
+      }
+    },
+    [isRefreshing, primaryEnvironmentId, refreshServerProviders],
+  );
 
   const focusSearchInput = useCallback(() => {
     searchInputRef.current?.focus({ preventScroll: true });
@@ -661,10 +686,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           >
             {/* Search bar */}
             <div className="px-2 pt-2">
-              <div className="border-b border-border/70 pb-2.5 transition-colors focus-within:border-ring">
+              <div className="flex items-center gap-1 border-b border-border/70 pb-2.5 transition-colors focus-within:border-ring">
                 <ComboboxInput
                   ref={searchInputRef}
-                  className="[&_input]:h-6.5 [&_input]:font-sans [&_input]:leading-6.5"
+                  className="flex-1 [&_input]:h-6.5 [&_input]:font-sans [&_input]:leading-6.5"
                   inputClassName="rounded-none bg-transparent text-sm"
                   placeholder="Search models..."
                   showTrigger={false}
@@ -706,6 +731,28 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   size="sm"
                   unstyled
                 />
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        type="button"
+                        size="icon-micro"
+                        variant="ghost-muted"
+                        disabled={isRefreshing}
+                        className="size-6 shrink-0"
+                        onClick={handleResyncModels}
+                        aria-label="Resync available models"
+                      >
+                        {isRefreshing ? (
+                          <LoaderIcon className="size-3 animate-spin text-muted-foreground" />
+                        ) : (
+                          <RefreshCwIcon className="size-3 text-muted-foreground hover:text-foreground" />
+                        )}
+                      </Button>
+                    }
+                  />
+                  <TooltipPopup side="top">Resync available models</TooltipPopup>
+                </Tooltip>
               </div>
             </div>
 

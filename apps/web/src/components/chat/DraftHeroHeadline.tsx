@@ -1,4 +1,4 @@
-import type { ScopedProjectRef } from "@t3tools/contracts";
+import { isGeneralChatProjectId, type ScopedProjectRef } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { FolderPlusIcon } from "lucide-react";
 import { useCallback, useMemo } from "react";
@@ -34,7 +34,7 @@ export function DraftHeroHeadline({
   activeProjectRef,
   activeProjectTitle,
 }: DraftHeroHeadlineProps) {
-  const projects = useProjects();
+  const projects = useProjects().filter((project) => !isGeneralChatProjectId(project.id));
   const threads = useThreadShells();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -84,8 +84,10 @@ export function DraftHeroHeadline({
     () => new Map(projectPickerEntries.map((entry) => [entry.group.projectKey, entry] as const)),
     [projectPickerEntries],
   );
+  const isGeneralChat =
+    activeProjectRef !== null && isGeneralChatProjectId(activeProjectRef.projectId);
   const activeProjectGroup =
-    activeProjectRef === null
+    activeProjectRef === null || isGeneralChat
       ? null
       : (projectGroups.find((group) =>
           group.memberProjectRefs.some(
@@ -94,7 +96,7 @@ export function DraftHeroHeadline({
         ) ?? null);
   const activeProjectKey = activeProjectGroup?.projectKey ?? "";
   const activeProjectDisplayName = activeProjectGroup?.displayName ?? activeProjectTitle;
-  const hasResolvedProject = activeProjectTitle !== null;
+  const hasResolvedProject = !isGeneralChat && activeProjectTitle !== null;
   const canChooseProject = projectPickerEntries.length > 0;
   const shouldShowProjectMenu = canChooseProject;
 
@@ -167,14 +169,23 @@ export function DraftHeroHeadline({
   );
 
   return (
-    <h1 className="mx-auto w-full max-w-5xl text-center font-normal text-2xl text-foreground tracking-tight sm:text-3xl">
-      {hasResolvedProject ? (
-        <>What should we build in {projectSelector}?</>
-      ) : canChooseProject ? (
-        <>{projectSelector} to start</>
-      ) : (
-        <>Add a project to start</>
-      )}
-    </h1>
+    <div className="mx-auto w-full max-w-5xl text-center">
+      <h1 className="font-normal text-2xl text-foreground tracking-tight sm:text-3xl">
+        {isGeneralChat ? (
+          <>What can I help you with?</>
+        ) : hasResolvedProject ? (
+          <>What should we build in {projectSelector}?</>
+        ) : canChooseProject ? (
+          <>{projectSelector} to start</>
+        ) : (
+          <>Add a project to start</>
+        )}
+      </h1>
+      {isGeneralChat ? (
+        <div className="pointer-events-auto mt-3 text-sm text-muted-foreground">
+          General chat · {projectSelector}
+        </div>
+      ) : null}
+    </div>
   );
 }

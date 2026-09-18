@@ -78,6 +78,48 @@ const STATUS_VISUALS: Record<RuntimeSubagent["status"], { dotClass: string; labe
   interrupted: { dotClass: "bg-muted-foreground/60", label: "Stopped" },
 };
 
+const AGENT_ACCENTS = [
+  { border: "border-l-sky-400", badge: "bg-sky-400/15 text-sky-300 ring-sky-400/25" },
+  { border: "border-l-violet-400", badge: "bg-violet-400/15 text-violet-300 ring-violet-400/25" },
+  {
+    border: "border-l-emerald-400",
+    badge: "bg-emerald-400/15 text-emerald-300 ring-emerald-400/25",
+  },
+  { border: "border-l-amber-400", badge: "bg-amber-400/15 text-amber-300 ring-amber-400/25" },
+  { border: "border-l-rose-400", badge: "bg-rose-400/15 text-rose-300 ring-rose-400/25" },
+  { border: "border-l-cyan-400", badge: "bg-cyan-400/15 text-cyan-300 ring-cyan-400/25" },
+  {
+    border: "border-l-fuchsia-400",
+    badge: "bg-fuchsia-400/15 text-fuchsia-300 ring-fuchsia-400/25",
+  },
+  { border: "border-l-lime-400", badge: "bg-lime-400/15 text-lime-300 ring-lime-400/25" },
+] as const;
+
+/** Stable pseudo-random identity color. Status remains a separate semantic signal. */
+export function agentAccent(agentId: string): (typeof AGENT_ACCENTS)[number] {
+  let hash = 2166136261;
+  for (let index = 0; index < agentId.length; index += 1) {
+    hash ^= agentId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return AGENT_ACCENTS[(hash >>> 0) % AGENT_ACCENTS.length]!;
+}
+
+function AgentIdentity({ agent }: { agent: RuntimeSubagent }) {
+  const accent = agentAccent(agent.id);
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex size-6 shrink-0 items-center justify-center rounded-md ring-1",
+        accent.badge,
+      )}
+    >
+      <Bot className="size-3.5" />
+    </span>
+  );
+}
+
 function StatusDot({ status }: { status: RuntimeSubagent["status"] }) {
   return (
     <span
@@ -168,6 +210,7 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
 
 /** Flat, non-interactive agent status line. No unfold. */
 function AgentRow({ agent }: { agent: RuntimeSubagent }) {
+  const accent = agentAccent(agent.id);
   const visuals = STATUS_VISUALS[agent.status];
   const active =
     agent.status === "running" || agent.status === "pending" || agent.status === "waiting";
@@ -204,12 +247,18 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
         : null;
 
   return (
-    <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
-      <span className="col-start-1 row-start-1 flex items-center">
-        <StatusDot status={agent.status} />
+    <div
+      className={cn(
+        "grid h-[3.875rem] grid-cols-[1.5rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md border-l-2 px-1.5 py-1",
+        accent.border,
+      )}
+    >
+      <span className="col-start-1 row-start-1 row-end-3 flex items-center">
+        <AgentIdentity agent={agent} />
       </span>
-      <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
+      <span className="col-start-2 row-start-1 flex min-w-0 items-center gap-2">
         <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
+        <StatusDot status={agent.status} />
         {role ? (
           <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
             {role}
@@ -382,6 +431,7 @@ function SwarmCard({
   onMessage?: (agent: RuntimeSubagent, message: string) => Promise<boolean>;
   onStop?: (agent: RuntimeSubagent) => Promise<boolean>;
 }) {
+  const accent = agentAccent(agent.id);
   const active =
     agent.status === "running" || agent.status === "pending" || agent.status === "waiting";
   const [messageOpen, setMessageOpen] = useState(false);
@@ -398,11 +448,19 @@ function SwarmCard({
   };
 
   return (
-    <article className="flex min-h-44 flex-col rounded-lg border border-border/70 bg-card/60 p-3 shadow-sm">
+    <article
+      className={cn(
+        "flex min-h-44 flex-col rounded-lg border border-l-2 border-border/70 bg-card/60 p-3 shadow-sm",
+        accent.border,
+      )}
+    >
       <div className="flex items-start gap-2">
-        <StatusDot status={agent.status} />
+        <AgentIdentity agent={agent} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold">{agent.title}</p>
+          <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
+            <span className="truncate">{agent.title}</span>
+            <StatusDot status={agent.status} />
+          </p>
           <p className="truncate text-[.7rem] text-muted-foreground">{modelLabel}</p>
         </div>
         <span className="rounded border border-border/60 px-1.5 py-0.5 font-mono text-[.65rem] text-muted-foreground">

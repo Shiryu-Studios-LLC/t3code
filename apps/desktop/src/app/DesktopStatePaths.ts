@@ -22,11 +22,12 @@ export function resolveDesktopBaseDir(input: {
 
 export function resolveDesktopStateDir(input: {
   readonly baseDir: string;
-  readonly isDevelopment: boolean;
   readonly joinPath: JoinPath;
-  readonly t3Home: Option.Option<string>;
 }): string {
-  const useDevSubdir =
-    input.isDevelopment && Option.isNone(normalizeConfiguredBaseDir(input.t3Home));
-  return input.joinPath(input.baseDir, useDevSubdir ? "dev" : "userdata");
+  // ShiryuGen intentionally shares one desktop profile between development
+  // and packaged builds. Keeping both channels on `userdata` means chats,
+  // settings, generated-image metadata, and other server-backed state remain
+  // available when switching between Alpha and Dev. The Electron userData
+  // directory is shared separately so renderer-local state follows too.
+  return input.joinPath(input.baseDir, "userdata");
 }

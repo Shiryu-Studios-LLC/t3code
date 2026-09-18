@@ -41,6 +41,8 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   ClockIcon,
+  FilmIcon,
+  LibraryIcon,
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
@@ -98,8 +100,11 @@ import {
 } from "../sidebarProjectGrouping";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
+import { useShiryuGenProductionStore } from "../shiryuGenProductionStore";
+import { useLocalImageActivityStore } from "../localImageActivityStore";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useGeneralChatHandler } from "../hooks/useGeneralChat";
 import { openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
@@ -136,7 +141,6 @@ import {
   resolveSettledTimestamp,
   resolveSidebarThreadStatus,
   searchSidebarThreadsByTitle,
-  shouldCreateNewThreadInCurrentProject,
   resolveWorkingStartedAt,
   sortLogicalProjectsForSidebar,
   sortPinnedThreadsForSidebar,
@@ -785,6 +789,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   });
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const terminalProcessCount = runningTerminalIds.length;
+  const pendingCharacterGeneration = useShiryuGenProductionStore(
+    (state) => state.pendingGenerationByThreadId[thread.id] ?? null,
+  );
+  const localImageActivity = useLocalImageActivityStore(
+    (state) => state.byThreadKey[threadKey] ?? null,
+  );
 
   const gitCwd = thread.worktreePath ?? props.projectCwd;
   const gitStatus = useEnvironmentQuery(
@@ -806,7 +816,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // Same semantics as the legacy sidebar (never-visited counts as read):
   // switching sidebars must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarThreadStatus(thread);
+  const status =
+    localImageActivity || pendingCharacterGeneration
+      ? "working"
+      : resolveSidebarThreadStatus(thread);
   // A woken thread reappears at its original position (the sort is
   // deliberately static), so the pill has to carry the weight. Snoozing is
   // an explicit act, so the pill clears only when the user re-engages:
@@ -843,7 +856,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     ? null
     : status === "working"
       ? {
-          label: "Working",
+          label:
+            localImageActivity?.label ??
+            (pendingCharacterGeneration ? "Generating image" : "Working"),
           icon: "working" as const,
           // No shimmer: a label that animates forever is noise in a sidebar
           // full of them (and repaints every vsync on high-refresh displays).
@@ -1478,7 +1493,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                         <span role="status">{topStatus.label}</span>
                         {status === "working" ? (
                           <span aria-hidden>
-                            <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                            <WorkingDuration
+                              startedAt={
+                                localImageActivity?.startedAt ??
+                                pendingCharacterGeneration?.createdAt ??
+                                resolveWorkingStartedAt(thread)
+                              }
+                            />
                           </span>
                         ) : null}
                       </span>
@@ -1794,6 +1815,7 @@ export default function Sidebar() {
   });
   const [projectScopeMenuOpen, setProjectScopeMenuOpen] = useState(false);
   const newThreadContext = useHandleNewThread();
+  const startGeneralChat = useGeneralChatHandler();
   const openAddProjectCommandPalette = useCallback(
     () => openCommandPalette({ open: "add-project" }),
     [],
@@ -3335,17 +3357,12 @@ export default function Sidebar() {
     autoAnimate(node, { duration: 150, easing: "ease-out" });
   }, []);
 
-  // New thread defaults to the project you're in (active thread's project,
-  // falling back to the top project) — same resolution the command palette
-  // uses. The command palette already offers a "New thread in..." submenu
-  // for multi-project setups.
+  // New Chat is projectless by default. Shift+click preserves the fast path
+  // for people who explicitly want another thread in the current project.
   const handleNewThreadClick = useCallback(
     (event?: ReactMouseEvent) => {
-      // One project: nothing to pick, create immediately. Shift+click creates
-      // directly in the current project even with several projects, skipping
-      // the palette picker.
-      if (shouldCreateNewThreadInCurrentProject(event?.shiftKey ?? false, projectGroups.length)) {
-        if (isMobile) setOpenMobile(false);
+      if (isMobile) setOpenMobile(false);
+      if (event?.shiftKey) {
         void startNewThreadFromContext({
           activeDraftThread: newThreadContext.activeDraftThread,
           activeThread: newThreadContext.activeThread ?? undefined,
@@ -3354,23 +3371,12 @@ export default function Sidebar() {
         });
         return;
       }
-      if (isMobile) setOpenMobile(false);
-      openCommandPalette({ open: "new-thread-in" });
+      void startGeneralChat();
     },
-    [isMobile, newThreadContext, projectGroups.length, setOpenMobile],
+    [isMobile, newThreadContext, setOpenMobile, startGeneralChat],
   );
 
-  // The button mirrors chat.new: in multi-project setups both route through
-  // the command palette's "New thread in..." picker, and in single-project
-  // setups both create immediately. In multi-project setups the label is only
-  // the picker's shortcut: falling back to chat.newLocal would advertise the
-  // same shortcut for both the picker and direct create. In single-project
-  // setups both commands create directly, so chat.newLocal is a valid
-  // fallback. The second tooltip line (multi-project only) advertises
-  // shift+click and its keyboard twin chat.newLocal for direct create.
-  const newThreadShortcutLabel =
-    shortcutLabelForCommand(keybindings, "chat.new") ??
-    (projectGroups.length <= 1 ? shortcutLabelForCommand(keybindings, "chat.newLocal") : undefined);
+  const newThreadShortcutLabel = shortcutLabelForCommand(keybindings, "chat.new");
   const newThreadInProjectShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newLocal");
   return (
     <>
@@ -3381,6 +3387,30 @@ export default function Sidebar() {
           // Lifted above the stage backdrop, whose fade bleeds below the
           // header and would otherwise paint across the search row's outline.
           <SidebarGroup className="relative z-[1] gap-1 p-[var(--sidebar-content-inset)]">
+            <div className="mb-1 grid grid-cols-2 gap-1">
+              <SidebarMenuButton
+                type="button"
+                className="focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                onClick={() => {
+                  if (isMobile) setOpenMobile(false);
+                  void router.navigate({ to: "/series" });
+                }}
+              >
+                <FilmIcon className="size-4" />
+                <span>Series Board</span>
+              </SidebarMenuButton>
+              <SidebarMenuButton
+                type="button"
+                className="focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                onClick={() => {
+                  if (isMobile) setOpenMobile(false);
+                  void router.navigate({ to: "/models" });
+                }}
+              >
+                <LibraryIcon className="size-4" />
+                <span>Models</span>
+              </SidebarMenuButton>
+            </div>
             <div className="flex items-center gap-1">
               <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground">
                 <SearchIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />

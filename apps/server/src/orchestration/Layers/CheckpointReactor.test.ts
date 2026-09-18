@@ -1086,6 +1086,67 @@ describe("CheckpointReactor", () => {
     ).toBe(false);
   });
 
+  it("rewinds provider conversation without filesystem checkpoints for General Chat", async () => {
+    const generalChatCwd = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-general-chat-revert-"),
+    );
+    tempDirs.push(generalChatCwd);
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      providerSessionCwd: generalChatCwd,
+      providerName: ProviderDriverKind.make("nvidia"),
+    });
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    for (const [index, text] of ["first prompt", "second prompt"].entries()) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-general-chat-turn-${index + 1}`),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: MessageId.make(`general-chat-user-${index + 1}`),
+            role: "user",
+            text,
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("nvidia"),
+            model: "deepseek-ai/deepseek-v4",
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt,
+        }),
+      );
+    }
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-general-chat-rewind"),
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+        createdAt,
+      }),
+    );
+
+    await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+    await harness.drain();
+
+    expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
+    expect(harness.provider.rollbackConversation).toHaveBeenCalledWith({
+      threadId: ThreadId.make("thread-1"),
+      numTurns: 1,
+    });
+    const snapshot = await harness.readModel();
+    expect(
+      snapshot.threads[0]?.messages
+        .filter((message) => message.role === "user")
+        .map((message) => message.text),
+    ).toEqual(["first prompt"]);
+  });
+
   it("executes provider revert and emits thread.reverted for claude sessions", async () => {
     const harness = await createHarness({ providerName: ProviderDriverKind.make("claudeAgent") });
     const createdAt = "2026-01-01T00:00:00.000Z";
@@ -1238,9 +1299,38 @@ describe("CheckpointReactor", () => {
     });
   });
 
-  it("appends an error activity when revert is requested without an active session", async () => {
+  it("reverts a dormant thread without requiring an active provider session", async () => {
     const harness = await createHarness({ hasSession: false });
     const createdAt = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-dormant-diff-1"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-dormant-1"),
+        completedAt: createdAt,
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-dormant-diff-2"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-dormant-2"),
+        completedAt: createdAt,
+        checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2),
+        status: "ready",
+        files: [],
+        checkpointTurnCount: 2,
+        createdAt,
+      }),
+    );
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1252,13 +1342,20 @@ describe("CheckpointReactor", () => {
       }),
     );
 
-    const thread = await waitForThread(harness.readModel, (entry) =>
-      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    await waitForEvent(harness.engine, (event) => event.type === "thread.reverted");
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.checkpoints.length === 1,
     );
 
     expect(thread.activities.some((activity) => activity.kind === "checkpoint.revert.failed")).toBe(
-      true,
+      false,
     );
+    expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
     expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
+    expect(
+      gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
+    ).toBe(false);
   });
 });

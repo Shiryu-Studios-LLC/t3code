@@ -1032,6 +1032,57 @@ describe("DesktopWindow", () => {
     }),
   );
 
+  it.effect("reloads an already-created renderer when the backend becomes ready", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.createMain;
+        assert.deepEqual(fakeWindow.loadURL.mock.calls, [["t3code-dev://app/"]]);
+
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        assert.deepEqual(fakeWindow.loadURL.mock.calls, [
+          ["t3code-dev://app/"],
+          ["t3code-dev://app/"],
+        ]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("does not reload an already-loaded renderer when the backend becomes ready", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+      });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.createMain;
+        const didFinishLoad = fakeWindow.webContentsListeners.get("did-finish-load");
+        if (!didFinishLoad) {
+          return yield* Effect.die("renderer load listener was not registered");
+        }
+        didFinishLoad();
+
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        assert.deepEqual(fakeWindow.loadURL.mock.calls, [["t3code-dev://app/"]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it.effect("recovers when the development renderer is temporarily unreachable", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();

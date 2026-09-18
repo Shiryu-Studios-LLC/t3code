@@ -92,6 +92,28 @@ function retainThreadMessagesAfterRevert(
   retainedTurnIds: ReadonlySet<string>,
   turnCount: number,
 ): ReadonlyArray<OrchestrationMessage> {
+  // Threads without git checkpoints (notably General Chat) have no retained
+  // checkpoint turn ids. Rewind them by conversational user-turn boundaries:
+  // keep the first N user turns and every assistant message belonging to those
+  // turns, while preserving system messages.
+  if (retainedTurnIds.size === 0) {
+    let retainedUserTurns = 0;
+    let pastRetainedConversation = turnCount === 0;
+    return messages.filter((message) => {
+      if (message.role === "system") return true;
+      if (message.role === "user") {
+        if (retainedUserTurns >= turnCount) {
+          pastRetainedConversation = true;
+          return false;
+        }
+        retainedUserTurns += 1;
+        pastRetainedConversation = false;
+        return true;
+      }
+      return retainedUserTurns > 0 && !pastRetainedConversation;
+    });
+  }
+
   const retainedMessageIds = new Set<string>();
   for (const message of messages) {
     if (message.role === "system") {
@@ -154,9 +176,10 @@ function retainThreadActivitiesAfterRevert(
   activities: ReadonlyArray<OrchestrationThread["activities"][number]>,
   retainedTurnIds: ReadonlySet<string>,
 ): ReadonlyArray<OrchestrationThread["activities"][number]> {
-  return activities.filter(
-    (activity) => activity.turnId === null || retainedTurnIds.has(activity.turnId),
-  );
+  return activities.filter((activity) => {
+    if (activity.kind === "checkpoint.revert.failed") return false;
+    return activity.turnId === null || retainedTurnIds.has(activity.turnId);
+  });
 }
 
 function retainThreadProposedPlansAfterRevert(
@@ -447,6 +470,7 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
+            ...(payload.projectId !== undefined ? { projectId: payload.projectId } : {}),
             ...(payload.title !== undefined ? { title: payload.title } : {}),
             ...(payload.titleRegeneration !== undefined
               ? { titleRegeneration: payload.titleRegeneration }

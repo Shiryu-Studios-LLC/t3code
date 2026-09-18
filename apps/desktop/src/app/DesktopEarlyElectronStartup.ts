@@ -57,9 +57,7 @@ function resolveEarlyDesktopSettingsPath(input: {
   });
   const stateDir = resolveDesktopStateDir({
     baseDir,
-    isDevelopment: isDevelopmentEnvironment(input.env),
     joinPath: input.joinPath,
-    t3Home,
   });
   return input.joinPath(stateDir, "desktop-settings.json");
 }

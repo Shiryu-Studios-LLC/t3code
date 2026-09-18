@@ -195,7 +195,7 @@ function redactMcpServer(server: McpServerConfig): McpServerConfig {
   };
 }
 
-function restoreRedactedMcpServer(
+export function restoreRedactedMcpServer(
   current: McpServerConfig | undefined,
   next: McpServerConfig,
 ): McpServerConfig {

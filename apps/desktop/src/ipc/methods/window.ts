@@ -298,6 +298,16 @@ export const openExternal = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const showItemInFolder = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.SHOW_ITEM_IN_FOLDER_CHANNEL,
+  payload: Schema.String,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.showItemInFolder")(function* (path) {
+    const shell = yield* ElectronShell.ElectronShell;
+    return shell.showItemInFolder ? yield* shell.showItemInFolder(path) : false;
+  }),
+});
+
 export const probeRemoteEditors = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PROBE_REMOTE_EDITORS_CHANNEL,
   payload: Schema.Undefined,

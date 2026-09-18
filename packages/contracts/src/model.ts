@@ -122,8 +122,58 @@ function canonicalSelectionsToLegacyObject(
   return out;
 }
 
+export const ModelCapabilityTag = Schema.Literals([
+  "reasoning",
+  "coding",
+  "vision_input",
+  "audio_input",
+  "video_input",
+  "image_generation",
+  "video_generation",
+  "audio_generation",
+  "speech_to_text",
+  "tool_calling",
+  "structured_output",
+  "large_context",
+]);
+export type ModelCapabilityTag = typeof ModelCapabilityTag.Type;
+
+export const CostTier = Schema.Literals(["free", "standard", "premium"]);
+export type CostTier = typeof CostTier.Type;
+
+export const CostPolicy = Schema.Literals(["free_only", "prefer_free", "unrestricted"]);
+export type CostPolicy = typeof CostPolicy.Type;
+
+export const AgentRole = Schema.Literals([
+  "orchestrator",
+  "coder",
+  "vision",
+  "image_generator",
+  "video_generator",
+  "audio_generator",
+  "speech_to_text",
+  "researcher",
+  "reviewer",
+  "custom",
+]);
+export type AgentRole = typeof AgentRole.Type;
+
 export const ModelCapabilities = Schema.Struct({
   optionDescriptors: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
+  tags: Schema.optional(Schema.Array(ModelCapabilityTag)),
+  reasoning: Schema.optional(Schema.Boolean),
+  coding: Schema.optional(Schema.Boolean),
+  imageInput: Schema.optional(Schema.Boolean),
+  audioInput: Schema.optional(Schema.Boolean),
+  videoInput: Schema.optional(Schema.Boolean),
+  imageOutput: Schema.optional(Schema.Boolean),
+  videoOutput: Schema.optional(Schema.Boolean),
+  audioOutput: Schema.optional(Schema.Boolean),
+  toolCalling: Schema.optional(Schema.Boolean),
+  structuredOutput: Schema.optional(Schema.Boolean),
+  contextWindow: Schema.optional(Schema.Number),
+  free: Schema.optional(Schema.Boolean),
+  costTier: Schema.optional(CostTier),
 });
 export type ModelCapabilities = typeof ModelCapabilities.Type;
 
@@ -134,6 +184,8 @@ const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 const GEMINI_DRIVER_KIND = ProviderDriverKind.make("gemini");
 const NVIDIA_DRIVER_KIND = ProviderDriverKind.make("nvidia");
 const OPENCODE_DRIVER_KIND = ProviderDriverKind.make("opencode");
+const OLLAMA_DRIVER_KIND = ProviderDriverKind.make("ollama");
+const OMNIROUTE_DRIVER_KIND = ProviderDriverKind.make("omniroute");
 
 export const DEFAULT_MODEL = "gpt-5.6-sol";
 
@@ -157,6 +209,8 @@ export const DEFAULT_MODEL_BY_PROVIDER: Partial<Record<ProviderDriverKind, strin
   [GEMINI_DRIVER_KIND]: "gemini-2.5-flash",
   [NVIDIA_DRIVER_KIND]: "meta/llama-3.3-70b-instruct",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
+  [OLLAMA_DRIVER_KIND]: "qwen3:8b",
+  [OMNIROUTE_DRIVER_KIND]: "auto/coding:free",
 };
 
 /** Per-provider text generation model defaults. */
@@ -170,6 +224,8 @@ export const DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER: Partial<
   [GEMINI_DRIVER_KIND]: "gemini-2.5-flash",
   [NVIDIA_DRIVER_KIND]: "meta/llama-3.3-70b-instruct",
   [OPENCODE_DRIVER_KIND]: "openai/gpt-5",
+  [OLLAMA_DRIVER_KIND]: "qwen3:8b",
+  [OMNIROUTE_DRIVER_KIND]: "auto/chat:free",
 };
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
@@ -254,6 +310,13 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Partial<
     "gpt-oss-20b": "openai/gpt-oss-20b",
   },
   [OPENCODE_DRIVER_KIND]: {},
+  [OMNIROUTE_DRIVER_KIND]: {
+    chat: "auto/chat:free",
+    coding: "auto/coding:free",
+    reasoning: "auto/reasoning:free",
+    vision: "auto/vision:free",
+    multimodal: "auto/multimodal:free",
+  },
 };
 
 // ── Provider display names ────────────────────────────────────────────
@@ -266,4 +329,6 @@ export const PROVIDER_DISPLAY_NAMES: Partial<Record<ProviderDriverKind, string>>
   [GEMINI_DRIVER_KIND]: "Gemini",
   [NVIDIA_DRIVER_KIND]: "NVIDIA",
   [OPENCODE_DRIVER_KIND]: "OpenCode",
+  [OLLAMA_DRIVER_KIND]: "Ollama",
+  [OMNIROUTE_DRIVER_KIND]: "OmniRoute",
 };

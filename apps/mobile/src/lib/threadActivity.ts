@@ -701,11 +701,19 @@ function memoizeValue<T>(build: () => T): () => T {
   };
 }
 
+function isRawJsonBlob(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+}
+
 function workEntryPreview(
   workEntry: Pick<WorkLogEntry, "detail" | "command" | "changedFiles">,
 ): string | null {
   if (workEntry.command) return workEntry.command;
-  if (workEntry.detail) return workEntry.detail;
+  if (workEntry.detail && !isRawJsonBlob(workEntry.detail)) return workEntry.detail;
   if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
   const [firstPath] = workEntry.changedFiles ?? [];
   if (!firstPath) return null;

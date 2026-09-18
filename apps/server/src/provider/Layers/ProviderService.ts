@@ -27,6 +27,7 @@ import {
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as DateTime from "effect/DateTime";
@@ -79,8 +80,6 @@ export interface ProviderServiceLiveOptions {
    * test see whether a credential was requested at all.
    */
   readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
-  /** Same seam as `issueMcpCredential`, for observing the deny path's revoke. */
-  readonly revokeMcpCredential?: typeof McpSessionRegistry.revokeActiveMcpThread;
 }
 
 type ProviderServiceMethod<Name extends keyof ProviderService.ProviderService["Service"]> =
@@ -233,17 +232,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
-  const revokeMcpCredential =
-    options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpThread;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   /**
-   * Attach the `t3-code` MCP server to the session that is about to start.
+   * Attach T3's authenticated MCP server to every provider session.
    *
-   * This is the only place a credential is minted, so withholding one here is
-   * what disables agent browser access everywhere: every adapter already
-   * treats a missing session as "no MCP server", and the `/mcp` endpoint
-   * accepts nothing but tokens issued from this path.
+   * The server hosts both always-available T3 capabilities (plugin catalog,
+   * installed plugins, skills) and optional capabilities such as preview
+   * browser automation. Browser access is therefore expressed as a credential
+   * capability instead of by removing the entire T3 MCP server from a session.
    */
   /**
    * Deny on an unreadable settings file rather than letting the read failure
@@ -277,18 +274,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       yield* Effect.sync(() =>
         ExternalMcpProviderSession.setExternalMcpProviderServers(threadId, externalServers),
       );
-      if (!(yield* agentBrowserAccessEnabled)) {
-        // Revoke as well as clear. Every other prepare path reaches
-        // `issueActiveMcpCredential`, which revokes the thread first, so
-        // skipping it here would leave a previously issued bearer token valid
-        // against `/mcp` for the rest of its liveness window — and later turns
-        // would keep refreshing it. A session restart (runtime mode, cwd,
-        // model) re-prepares without stopping, so it relies on this.
-        yield* revokeMcpCredential(threadId);
-        yield* Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId));
-        return undefined;
-      }
-      const credential = yield* issueMcpCredential({ threadId, providerInstanceId });
+      const previewAccessEnabled = yield* agentBrowserAccessEnabled;
+      const credential = yield* issueMcpCredential({
+        threadId,
+        providerInstanceId,
+        capabilities: previewAccessEnabled ? new Set(["preview"] as const) : new Set(),
+      });
       if (credential) {
         yield* Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config));
       }
@@ -429,7 +420,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     () => reconcileInstanceSubscriptions,
   ).pipe(Effect.forkScoped);
 
-  const syncExternalMcpServers = (settings: ServerSettings.ServerSettings) =>
+  const syncExternalMcpServers = (settings: ServerSettingsValue) =>
     Effect.gen(function* () {
       const servers = settings.mcpServers ?? [];
       ExternalMcpProviderSession.setGlobalExternalMcpServers(servers);
@@ -449,7 +440,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   }
 
   const serverSettingsChanges = yield* serverSettings.subscribeChanges;
-  yield* Stream.runForEach(Stream.fromSubscription(serverSettingsChanges), (settings) =>
+  yield* Stream.runForEach(serverSettingsChanges, (settings) =>
     syncExternalMcpServers(settings),
   ).pipe(Effect.forkScoped);
 

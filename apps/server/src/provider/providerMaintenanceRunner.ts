@@ -56,7 +56,9 @@ export class ProviderMaintenanceRunner extends Context.Service<
   ProviderMaintenanceRunnerShape
 >()("t3/provider/providerMaintenanceRunner") {}
 
-class ProviderMaintenanceCommandError extends Data.TaggedError("ProviderMaintenanceCommandError")<{
+export class ProviderMaintenanceCommandError extends Data.TaggedError(
+  "ProviderMaintenanceCommandError",
+)<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
@@ -68,87 +70,87 @@ interface VerifiedProviderRefresh {
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
-const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceRunner.runCommand")(
-  function* (input: {
-    readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
-    readonly command: string;
-    readonly args: ReadonlyArray<string>;
-  }) {
-    const collectCommandResult = Effect.fn("ProviderMaintenanceRunner.collectCommandResult")(
-      function* () {
-        // Resolve the executable for the host platform before spawning. On
-        // Windows the update tools are batch shims (e.g. `npm` -> `npm.cmd`),
-        // which a bare ChildProcess.spawn cannot launch (spawn npm ENOENT);
-        // resolveSpawnCommand finds the real `.cmd` and routes it through the
-        // shell. On Linux/macOS (incl. the WSL backend) this is a no-op.
-        const resolved = yield* resolveSpawnCommand(input.command, input.args);
-        const child = yield* input.spawner
-          .spawn(ChildProcess.make(resolved.command, resolved.args, { shell: resolved.shell }))
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderMaintenanceCommandError({
-                  message: `Failed to run update command ${input.command}: ${cause.message}`,
-                  cause,
-                }),
-            ),
-          );
-        yield* Effect.addFinalizer(() => child.kill().pipe(Effect.ignore));
-
-        const [stdout, stderr, exitCode] = yield* Effect.all(
-          [
-            collectUint8StreamText({
-              stream: child.stdout,
-              maxBytes: UPDATE_OUTPUT_MAX_BYTES,
-            }),
-            collectUint8StreamText({
-              stream: child.stderr,
-              maxBytes: UPDATE_OUTPUT_MAX_BYTES,
-            }),
-            child.exitCode,
-          ],
-          { concurrency: "unbounded" },
-        ).pipe(
+export const runProviderMaintenanceCommandWithSpawner = Effect.fn(
+  "ProviderMaintenanceRunner.runCommand",
+)(function* (input: {
+  readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+}) {
+  const collectCommandResult = Effect.fn("ProviderMaintenanceRunner.collectCommandResult")(
+    function* () {
+      // Resolve the executable for the host platform before spawning. On
+      // Windows the update tools are batch shims (e.g. `npm` -> `npm.cmd`),
+      // which a bare ChildProcess.spawn cannot launch (spawn npm ENOENT);
+      // resolveSpawnCommand finds the real `.cmd` and routes it through the
+      // shell. On Linux/macOS (incl. the WSL backend) this is a no-op.
+      const resolved = yield* resolveSpawnCommand(input.command, input.args);
+      const child = yield* input.spawner
+        .spawn(ChildProcess.make(resolved.command, resolved.args, { shell: resolved.shell }))
+        .pipe(
           Effect.mapError(
             (cause) =>
               new ProviderMaintenanceCommandError({
-                message: cause instanceof Error ? cause.message : "Update command failed to run.",
+                message: `Failed to run update command ${input.command}: ${cause.message}`,
                 cause,
               }),
           ),
         );
+      yield* Effect.addFinalizer(() => child.kill().pipe(Effect.ignore));
 
-        return {
-          stdout: stdout.text,
-          stderr: stderr.text,
-          exitCode: Number(exitCode),
-          timedOut: false,
-          stdoutTruncated: stdout.truncated,
-          stderrTruncated: stderr.truncated,
-        } satisfies ProviderMaintenanceCommandResult;
-      },
-    );
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          collectUint8StreamText({
+            stream: child.stdout,
+            maxBytes: UPDATE_OUTPUT_MAX_BYTES,
+          }),
+          collectUint8StreamText({
+            stream: child.stderr,
+            maxBytes: UPDATE_OUTPUT_MAX_BYTES,
+          }),
+          child.exitCode,
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderMaintenanceCommandError({
+              message: cause instanceof Error ? cause.message : "Update command failed to run.",
+              cause,
+            }),
+        ),
+      );
 
-    return yield* collectCommandResult().pipe(
-      Effect.scoped,
-      Effect.timeoutOption(Duration.millis(UPDATE_TIMEOUT_MS)),
-      Effect.map((result) =>
-        Option.match(result, {
-          onSome: (value) => value,
-          onNone: () =>
-            ({
-              stdout: "",
-              stderr: "",
-              exitCode: null,
-              timedOut: true,
-              stdoutTruncated: false,
-              stderrTruncated: false,
-            }) satisfies ProviderMaintenanceCommandResult,
-        }),
-      ),
-    );
-  },
-);
+      return {
+        stdout: stdout.text,
+        stderr: stderr.text,
+        exitCode: Number(exitCode),
+        timedOut: false,
+        stdoutTruncated: stdout.truncated,
+        stderrTruncated: stderr.truncated,
+      } satisfies ProviderMaintenanceCommandResult;
+    },
+  );
+
+  return yield* collectCommandResult().pipe(
+    Effect.scoped,
+    Effect.timeoutOption(Duration.millis(UPDATE_TIMEOUT_MS)),
+    Effect.map((result) =>
+      Option.match(result, {
+        onSome: (value) => value,
+        onNone: () =>
+          ({
+            stdout: "",
+            stderr: "",
+            exitCode: null,
+            timedOut: true,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          }) satisfies ProviderMaintenanceCommandResult,
+      }),
+    ),
+  );
+});
 
 function trimNullable(value: string): string | null {
   const trimmed = value.trim();

@@ -5,16 +5,21 @@ import {
   GrokSettings,
   GeminiSettings,
   NvidiaSettings,
+  OllamaSettings,
+  OmniRouteSettings,
   OpenCodeSettings,
   ProviderDriverKind,
+  type ProviderInstanceEnvironmentVariable,
 } from "@t3tools/contracts";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import {
   ClaudeAI,
   CursorIcon,
   Gemini,
   GrokIcon,
   NvidiaIcon,
+  OllamaIcon,
+  OmniRouteIcon,
   type Icon,
   OpenAI,
   OpenCodeIcon,
@@ -35,6 +40,7 @@ export interface ProviderClientDefinition {
   readonly label: string;
   readonly icon: Icon;
   readonly settingsSchema: ProviderSettingsSchema;
+  readonly defaultEnvironment?: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
   /**
    * Optional short label rendered as a `variant="warning"` badge next to
    * the instance title. Used to flag drivers that still ship under an
@@ -90,6 +96,25 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     icon: NvidiaIcon,
     settingsSchema: NvidiaSettings,
   },
+  {
+    value: ProviderDriverKind.make("omniroute"),
+    label: "OmniRoute",
+    icon: OmniRouteIcon,
+    settingsSchema: OmniRouteSettings,
+    defaultEnvironment: [
+      {
+        name: "OMNIROUTE_API_KEY",
+        value: "",
+        sensitive: true,
+      },
+    ],
+  },
+  {
+    value: ProviderDriverKind.make("ollama"),
+    label: "Ollama",
+    icon: OllamaIcon,
+    settingsSchema: OllamaSettings,
+  },
 ];
 
 export const PROVIDER_CLIENT_DEFINITION_BY_VALUE: Partial<
@@ -110,4 +135,28 @@ export type DriverOption = ProviderClientDefinition;
 export function getDriverOption(driver: ProviderDriverKind | undefined): DriverOption | undefined {
   if (driver === undefined) return undefined;
   return PROVIDER_CLIENT_DEFINITION_BY_VALUE[driver];
+}
+
+export function getDriverDefaultEnvironment(
+  driver: ProviderDriverKind | undefined,
+): ReadonlyArray<ProviderInstanceEnvironmentVariable> | undefined {
+  const environment = getDriverOption(driver)?.defaultEnvironment;
+  return environment?.map((variable) => ({ ...variable }));
+}
+
+export function getDriverDefaultConfig(
+  driver: ProviderDriverKind | undefined,
+): Record<string, unknown> | undefined {
+  const definition = getDriverOption(driver);
+  if (!definition) return undefined;
+  try {
+    // Provider settings schemas are browser-safe and service-free, but the
+    // metadata interface intentionally erases the concrete schema generics.
+    return Schema.decodeUnknownSync(definition.settingsSchema as never)({}) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    return undefined;
+  }
 }

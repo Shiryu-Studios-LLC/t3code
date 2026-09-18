@@ -48,7 +48,22 @@ describe("external MCP provider configuration", () => {
       },
     ]);
 
-    expect(externalMcpServersForAcp(threadId)).toHaveLength(2);
+    const acpServers = externalMcpServersForAcp(threadId);
+    expect(acpServers).toHaveLength(2);
+    expect(acpServers[0]).toEqual({
+      type: "http",
+      name: "t3-user-remote-tools",
+      url: "https://mcp.example.test/mcp",
+      headers: [{ name: "Authorization", value: "Bearer secret" }],
+    });
+    expect(acpServers[1]).toEqual({
+      name: "t3-user-local-tools",
+      command: "node",
+      args: ["server.mjs"],
+      env: [{ name: "API_KEY", value: "secret" }],
+    });
+    expect("type" in acpServers[1]!).toBe(false);
+
     expect(externalMcpServersForClaude(threadId)).toMatchObject({
       "t3-user-remote-tools": { type: "http", url: "https://mcp.example.test/mcp" },
       "t3-user-local-tools": { type: "stdio", command: "node" },

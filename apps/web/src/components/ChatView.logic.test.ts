@@ -14,6 +14,7 @@ import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
+  buildGeneratedImageEditInput,
   buildLoadingThreadFromShell,
   buildThreadTurnInterruptInput,
   createLocalDispatchSnapshot,
@@ -28,7 +29,9 @@ import {
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
   resolveBackgroundDraftWorkspaceOptions,
+  resolveEditRewindTurnCount,
   resolveDraftPromotionNavigationTarget,
+  resolveCharacterGenerationThreadModelSelection,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   resolveDraftHeroState,
@@ -44,6 +47,83 @@ const environmentId = EnvironmentId.make("environment-local");
 const projectId = ProjectId.make("project-1");
 const threadId = ThreadId.make("thread-1");
 const now = "2026-03-29T00:00:00.000Z";
+
+describe("character generation thread model selection", () => {
+  const fallback = {
+    instanceId: ProviderInstanceId.make("ollama_local"),
+    model: "qwen3-vl:8b",
+  };
+
+  it("keeps a real thread model selection", () => {
+    const current = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4",
+    };
+
+    expect(resolveCharacterGenerationThreadModelSelection({ current, fallback })).toBe(current);
+  });
+
+  it("replaces the local draft no-provider placeholder before thread creation", () => {
+    expect(
+      resolveCharacterGenerationThreadModelSelection({
+        current: {
+          instanceId: ProviderInstanceId.make("t3code_no_provider"),
+          model: "",
+        },
+        fallback,
+      }),
+    ).toEqual(fallback);
+  });
+});
+
+describe("generated image edit input", () => {
+  it("routes edits through local image generation with the selected attachment", () => {
+    expect(
+      buildGeneratedImageEditInput({
+        threadId,
+        attachmentId: "generated-image-42",
+        instruction: "  make the hair red  ",
+      }),
+    ).toEqual({
+      threadId,
+      prompt: "make the hair red",
+      requestText: "Edit image: make the hair red",
+      referenceAttachmentId: "generated-image-42",
+    });
+  });
+
+  it("does not submit an empty image edit", () => {
+    expect(
+      buildGeneratedImageEditInput({
+        threadId,
+        attachmentId: "generated-image-42",
+        instruction: "   ",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("edit rewind turn resolution", () => {
+  it("uses conversational turn zero for the first General Chat message", () => {
+    expect(
+      resolveEditRewindTurnCount({
+        isGeneralChat: true,
+        conversationTurnCount: 0,
+        checkpointTurnCount: 1,
+      }),
+    ).toBe(0);
+  });
+
+  it("keeps checkpoint rewind semantics for project chats", () => {
+    expect(
+      resolveEditRewindTurnCount({
+        isGeneralChat: false,
+        conversationTurnCount: 0,
+        checkpointTurnCount: 3,
+      }),
+    ).toBe(3);
+  });
+});
 
 describe("draft hero submission transition", () => {
   it("does not dock the composer before a background submission", () => {
@@ -740,6 +820,26 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         threadError: null,
       }),
     ).toBe(false);
+  });
+
+  it("acknowledges an in-flight snapshot when the user switches threads", () => {
+    const localDispatch = createLocalDispatchSnapshot(
+      makeThread({ latestTurn: completedTurn, session: readySession }),
+    );
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch,
+        currentThreadId: ThreadId.make("thread-2"),
+        phase: "ready",
+        latestTurn: completedTurn,
+        latestUserMessageId: localDispatch.latestUserMessageId,
+        session: readySession,
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
   });
 
   it("keeps a follow-up active while its provider session is starting", () => {

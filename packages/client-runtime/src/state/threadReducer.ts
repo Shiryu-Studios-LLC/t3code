@@ -522,7 +522,11 @@ export function applyThreadDetailEvent(
       );
 
       const retainedTurnIds = new Set(Arr.map(checkpoints, (entry) => entry.turnId));
-      const messages = retainMessagesAfterRevert(thread.messages, retainedTurnIds);
+      const messages = retainMessagesAfterRevert(
+        thread.messages,
+        retainedTurnIds,
+        event.payload.turnCount,
+      );
       const proposedPlans = pipe(
         thread.proposedPlans,
         Arr.filter((plan) => plan.turnId === null || retainedTurnIds.has(plan.turnId)),
@@ -654,9 +658,36 @@ function rebindCheckpointAssistantMessage(
 function retainMessagesAfterRevert(
   messages: ReadonlyArray<OrchestrationMessage>,
   retainedTurnIds: ReadonlySet<string>,
+  turnCount: number,
 ): OrchestrationMessage[] {
-  // Keep messages that belong to a retained turn, plus system messages and
-  // messages without a turn binding (pre-turn-0 user messages).
+  // Threads without git checkpoints (notably General Chat) cannot infer the
+  // retained conversation from turn-bound checkpoint ids. Mirror the server
+  // projector exactly: keep the first N user turns plus their assistant
+  // messages, while preserving system messages. Without this branch the
+  // client retains every turnId=null user message even after the server has
+  // removed it, so edit/regenerate waits forever for a message that is already
+  // gone in the authoritative projection.
+  if (retainedTurnIds.size === 0) {
+    let retainedUserTurns = 0;
+    let pastRetainedConversation = turnCount === 0;
+    return Arr.filter(messages, (message) => {
+      if (message.role === "system") return true;
+      if (message.role === "user") {
+        if (retainedUserTurns >= turnCount) {
+          pastRetainedConversation = true;
+          return false;
+        }
+        retainedUserTurns += 1;
+        pastRetainedConversation = false;
+        return true;
+      }
+      return retainedUserTurns > 0 && !pastRetainedConversation;
+    });
+  }
+
+  // Checkpoint-backed threads keep messages that belong to a retained turn,
+  // plus system messages and messages without a turn binding (pre-turn-0
+  // user messages).
   return Arr.filter(messages, (message) => {
     if (message.role === "system") {
       return true;

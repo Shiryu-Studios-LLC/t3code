@@ -76,6 +76,7 @@ import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
+import { playTextToSpeech } from "../../tts/ttsController";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -196,8 +197,36 @@ const BACKGROUND_ACTIVITY_PROFILE_DESCRIPTIONS: Record<BackgroundActivityProfile
 
 const TEXT_TO_SPEECH_PROVIDER_LABELS = {
   system: "System voice",
+  kokoro: "Kokoro (Local)",
+  omniroute: "OmniRoute",
   openai: "OpenAI",
 } as const;
+
+const KOKORO_TEXT_TO_SPEECH_VOICES = [
+  { value: "am_michael", label: "Michael — American male" },
+  { value: "am_adam", label: "Adam — American male" },
+  { value: "am_eric", label: "Eric — American male" },
+  { value: "am_liam", label: "Liam — American male" },
+  { value: "am_onyx", label: "Onyx — American male" },
+  { value: "af_bella", label: "Bella — American female" },
+  { value: "af_nicole", label: "Nicole — American female" },
+  { value: "af_sarah", label: "Sarah — American female" },
+  { value: "bf_emma", label: "Emma — British female" },
+  { value: "bm_george", label: "George — British male" },
+] as const;
+
+const OMNIROUTE_TEXT_TO_SPEECH_VOICES = [
+  { value: "am_michael", label: "Michael — American male" },
+  { value: "am_adam", label: "Adam — American male" },
+  { value: "am_eric", label: "Eric — American male" },
+  { value: "am_liam", label: "Liam — American male" },
+  { value: "am_onyx", label: "Onyx — American male" },
+  { value: "af_bella", label: "Bella — American female" },
+  { value: "af_nicole", label: "Nicole — American female" },
+  { value: "af_sarah", label: "Sarah — American female" },
+  { value: "bf_emma", label: "Emma — British female" },
+  { value: "bm_george", label: "George — British male" },
+] as const;
 
 const OPENAI_TEXT_TO_SPEECH_VOICES = [
   "alloy",
@@ -2673,9 +2702,13 @@ export function GeneralSettingsPanel() {
         <SettingsRow
           {...searchableSetting("text-to-speech-provider")}
           description={
-            settings.textToSpeechProvider === "openai"
-              ? "Generate natural speech with OpenAI using the API key configured on the T3 host."
-              : "Use a voice installed on this device without sending response text to a cloud speech service."
+            settings.textToSpeechProvider === "omniroute"
+              ? "Use the shared OmniRoute speech endpoint. The default route uses Shiryu's local Kokoro voice service with selectable English voices and automatically falls back to free gTTS if the local service is unavailable."
+              : settings.textToSpeechProvider === "openai"
+                ? "Generate natural speech with OpenAI using the API key configured on the T3 host."
+                : settings.textToSpeechProvider === "kokoro"
+                  ? "Generate higher-quality neural speech locally with Kokoro. The free model is downloaded once and cached on this device."
+                  : "Use a voice installed on this device without sending response text to a cloud speech service."
           }
           resetAction={
             settings.textToSpeechProvider !== DEFAULT_TEXT_TO_SPEECH_PROVIDER ? (
@@ -2694,10 +2727,22 @@ export function GeneralSettingsPanel() {
             <Select
               value={settings.textToSpeechProvider}
               onValueChange={(value) => {
-                if (value === "system" || value === "openai") {
+                if (
+                  value === "system" ||
+                  value === "kokoro" ||
+                  value === "omniroute" ||
+                  value === "openai"
+                ) {
                   updateSettings({
                     textToSpeechProvider: value,
-                    textToSpeechVoice: value === "openai" ? "alloy" : "",
+                    textToSpeechVoice:
+                      value === "omniroute"
+                        ? "en"
+                        : value === "openai"
+                          ? "alloy"
+                          : value === "kokoro"
+                            ? "am_michael"
+                            : "",
                   });
                 }
               }}
@@ -2710,6 +2755,12 @@ export function GeneralSettingsPanel() {
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 <SelectItem hideIndicator value="system">
                   {TEXT_TO_SPEECH_PROVIDER_LABELS.system}
+                </SelectItem>
+                <SelectItem hideIndicator value="kokoro">
+                  {TEXT_TO_SPEECH_PROVIDER_LABELS.kokoro}
+                </SelectItem>
+                <SelectItem hideIndicator value="omniroute">
+                  {TEXT_TO_SPEECH_PROVIDER_LABELS.omniroute}
                 </SelectItem>
                 <SelectItem hideIndicator value="openai">
                   {TEXT_TO_SPEECH_PROVIDER_LABELS.openai}
@@ -2733,7 +2784,63 @@ export function GeneralSettingsPanel() {
             ) : null
           }
           control={
-            settings.textToSpeechProvider === "openai" ? (
+            settings.textToSpeechProvider === "kokoro" ? (
+              <Select
+                value={
+                  KOKORO_TEXT_TO_SPEECH_VOICES.some(
+                    (voice) => voice.value === settings.textToSpeechVoice,
+                  )
+                    ? settings.textToSpeechVoice
+                    : "am_michael"
+                }
+                onValueChange={(value) => {
+                  if (value) updateSettings({ textToSpeechVoice: value });
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-64" aria-label="Text to speech voice">
+                  <SelectValue>
+                    {KOKORO_TEXT_TO_SPEECH_VOICES.find(
+                      (voice) => voice.value === settings.textToSpeechVoice,
+                    )?.label ?? "Michael — American male"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {KOKORO_TEXT_TO_SPEECH_VOICES.map((voice) => (
+                    <SelectItem key={voice.value} hideIndicator value={voice.value}>
+                      {voice.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            ) : settings.textToSpeechProvider === "omniroute" ? (
+              <Select
+                value={
+                  OMNIROUTE_TEXT_TO_SPEECH_VOICES.some(
+                    (voice) => voice.value === settings.textToSpeechVoice,
+                  )
+                    ? settings.textToSpeechVoice
+                    : "am_michael"
+                }
+                onValueChange={(value) => {
+                  if (value) updateSettings({ textToSpeechVoice: value });
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-64" aria-label="Text to speech voice">
+                  <SelectValue>
+                    {OMNIROUTE_TEXT_TO_SPEECH_VOICES.find(
+                      (voice) => voice.value === settings.textToSpeechVoice,
+                    )?.label ?? "Michael — American male"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {OMNIROUTE_TEXT_TO_SPEECH_VOICES.map((voice) => (
+                    <SelectItem key={voice.value} hideIndicator value={voice.value}>
+                      {voice.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            ) : settings.textToSpeechProvider === "openai" ? (
               <Select
                 value={
                   OPENAI_TEXT_TO_SPEECH_VOICES.includes(
@@ -2796,6 +2903,28 @@ export function GeneralSettingsPanel() {
                 aria-label="Text to speech voice"
               />
             )
+          }
+        />
+
+        <SettingsRow
+          title="Voice preview"
+          description={
+            settings.textToSpeechProvider === "kokoro"
+              ? "Preview the selected Kokoro voice. The first preview downloads and prepares the local model."
+              : "Preview the currently selected text-to-speech voice."
+          }
+          control={
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                void playTextToSpeech(
+                  "Hi, I'm your T3 assistant. This is how the selected voice sounds.",
+                ).catch((error) => console.error("[TTS] voice preview failed", error))
+              }
+            >
+              Preview voice
+            </Button>
           }
         />
 

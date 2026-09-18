@@ -961,6 +961,26 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["tool-complete"]);
   });
 
+  it("maps provider-exposed reasoning summaries to Thinking rows", () => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        id: "reasoning-summary",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "reasoning.summary",
+        summary: "Thinking",
+        tone: "info",
+        payload: { detail: "Checked constraints and selected the safest implementation." },
+      }),
+    ]);
+
+    expect(entry).toMatchObject({
+      label: "Thinking",
+      tone: "thinking",
+      detail: "Checked constraints and selected the safest implementation.",
+      sourceActivityKind: "reasoning.summary",
+    });
+  });
+
   it("omits task.started but shows task.progress and task.completed", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1845,6 +1865,38 @@ describe("deriveWorkLogEntries", () => {
 });
 
 describe("deriveTimelineEntries", () => {
+  it("puts a user prompt before an assistant response when legacy image timestamps tie", () => {
+    const createdAt = "2026-09-14T23:11:20.000Z";
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("local-image-assistant-a"),
+          role: "assistant",
+          text: "Image generated locally.",
+          createdAt,
+          turnId: null,
+          updatedAt: createdAt,
+          streaming: false,
+        },
+        {
+          id: MessageId.make("local-image-user-z"),
+          role: "user",
+          text: "Create a kitsune character",
+          createdAt,
+          turnId: null,
+          updatedAt: createdAt,
+          streaming: false,
+        },
+      ],
+      [],
+      [],
+    );
+
+    expect(
+      entries.map((entry) => (entry.kind === "message" ? entry.message.role : entry.kind)),
+    ).toEqual(["user", "assistant"]);
+  });
+
   it("includes proposed plans alongside messages and work entries in chronological order", () => {
     const entries = deriveTimelineEntries(
       [

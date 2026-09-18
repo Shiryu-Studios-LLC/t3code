@@ -1,3 +1,4 @@
+// @effect-diagnostics globalTimersInEffect:off globalFetchInEffect:off - Provider discovery uses the vendor HTTP boundary with an abort timeout.
 import {
   type GeminiSettings,
   type ModelCapabilities,
@@ -157,6 +158,59 @@ export function resolveGeminiApiKey(
   return envKey && envKey.length > 0 ? envKey : undefined;
 }
 
+export function fetchGeminiRemoteModels(
+  apiKey: string,
+  endpoint: string,
+): Effect.Effect<ReadonlyArray<ServerProviderModel>> {
+  return Effect.gen(function* () {
+    const rootEndpoint = endpoint.replace(/\/+$/, "");
+    const url = `${rootEndpoint}/models?key=${encodeURIComponent(apiKey)}`;
+    const response = yield* Effect.tryPromise({
+      try: async () => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        try {
+          const res = await fetch(url, { signal: controller.signal });
+          if (!res.ok) return [];
+          const data = (await res.json()) as {
+            models?: Array<{
+              name?: string;
+              displayName?: string;
+              supportedGenerationMethods?: string[];
+            }>;
+          };
+          if (!Array.isArray(data?.models)) return [];
+          const remoteModels: ServerProviderModel[] = [];
+          for (const item of data.models) {
+            const methods = item.supportedGenerationMethods ?? [];
+            if (!methods.includes("generateContent")) continue;
+            const rawName = item.name ?? "";
+            const slug = rawName.startsWith("models/") ? rawName.slice("models/".length) : rawName;
+            if (
+              !slug ||
+              slug.toLowerCase().includes("embedding") ||
+              slug.toLowerCase().includes("aqa")
+            ) {
+              continue;
+            }
+            remoteModels.push({
+              slug,
+              name: item.displayName || slug,
+              isCustom: false,
+              capabilities: DEFAULT_GEMINI_MODEL_CAPABILITIES,
+            });
+          }
+          return remoteModels;
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+      catch: () => [] as ServerProviderModel[],
+    });
+    return response;
+  }).pipe(Effect.catchCause(() => Effect.succeed([] as ServerProviderModel[])));
+}
+
 export function buildInitialGeminiProviderSnapshot(
   geminiSettings: GeminiSettings,
 ): Effect.Effect<ServerProviderDraft> {
@@ -205,18 +259,17 @@ export const checkGeminiProviderStatus = Effect.fn("checkGeminiProviderStatus")(
   environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<ServerProviderDraft> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  const models = providerModelsFromSettings(
-    GEMINI_MODEL_CATALOG,
-    geminiSettings.customModels,
-    DEFAULT_GEMINI_MODEL_CAPABILITIES,
-  );
 
   if (!geminiSettings.enabled) {
     return buildServerProvider({
       presentation: GEMINI_PRESENTATION,
       enabled: false,
       checkedAt,
-      models,
+      models: providerModelsFromSettings(
+        GEMINI_MODEL_CATALOG,
+        geminiSettings.customModels,
+        DEFAULT_GEMINI_MODEL_CAPABILITIES,
+      ),
       probe: {
         installed: false,
         version: null,
@@ -229,6 +282,21 @@ export const checkGeminiProviderStatus = Effect.fn("checkGeminiProviderStatus")(
 
   const apiKey = resolveGeminiApiKey(geminiSettings, environment);
   const hasKey = Boolean(apiKey);
+  const endpoint = resolveGeminiApiEndpoint(geminiSettings);
+
+  let baseCatalog = GEMINI_MODEL_CATALOG;
+  if (hasKey && apiKey) {
+    const liveModels = yield* fetchGeminiRemoteModels(apiKey, endpoint);
+    if (liveModels.length > 0) {
+      baseCatalog = liveModels;
+    }
+  }
+
+  const models = providerModelsFromSettings(
+    baseCatalog,
+    geminiSettings.customModels,
+    DEFAULT_GEMINI_MODEL_CAPABILITIES,
+  );
 
   return buildServerProvider({
     presentation: GEMINI_PRESENTATION,
@@ -272,3 +340,4 @@ export const enrichGeminiSnapshot = (input: {
     Effect.asVoid,
   );
 };
+// @effect-diagnostics globalTimersInEffect:off globalFetchInEffect:off - Provider discovery uses the vendor HTTP boundary with an abort timeout.

@@ -63,6 +63,13 @@ import {
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
+  LocalImageGenerationError,
+  LocalImageGenerateInput,
+  LocalImageGenerateResult,
+  ShiryuGenPromptFormatInput,
+  ShiryuGenPromptFormatResult,
+} from "./imageGeneration.ts";
+import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationDispatchCommandError,
@@ -200,7 +207,17 @@ import {
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
 import { UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
-import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
+import {
+  McpRegistryError,
+  McpRegistrySearchInput,
+  McpRegistrySearchResult,
+} from "./mcpRegistry.ts";
+import {
+  McpServerConfig,
+  ServerSettings,
+  ServerSettingsError,
+  ServerSettingsPatch,
+} from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -238,6 +255,10 @@ export const WS_METHODS = {
   providerSwarmLaunchAgent: "provider.swarm.launchAgent",
   providerSwarmMessageAgent: "provider.swarm.messageAgent",
   providerSwarmStopAgent: "provider.swarm.stopAgent",
+
+  // Local image generation (provider-independent)
+  localImageGenerate: "localImage.generate",
+  shiryuGenFormatPrompt: "shiryuGen.formatPrompt",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -290,6 +311,8 @@ export const WS_METHODS = {
   serverRemoveKeybinding: "server.removeKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverCheckMcpHealth: "server.checkMcpHealth",
+  serverSearchMcpRegistry: "server.searchMcpRegistry",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
@@ -414,6 +437,27 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
   payload: Schema.Struct({ patch: ServerSettingsPatch }),
   success: ServerSettings,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+export const McpServerHealthResult = Schema.Struct({
+  serverId: Schema.String,
+  serverName: Schema.String,
+  healthy: Schema.Boolean,
+  error: Schema.optional(Schema.String),
+  toolCount: Schema.optional(Schema.Number),
+});
+export type McpServerHealthResult = Schema.Schema.Type<typeof McpServerHealthResult>;
+
+export const WsServerCheckMcpHealthRpc = Rpc.make(WS_METHODS.serverCheckMcpHealth, {
+  payload: Schema.Struct({ server: McpServerConfig }),
+  success: McpServerHealthResult,
+  error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+});
+
+export const WsServerSearchMcpRegistryRpc = Rpc.make(WS_METHODS.serverSearchMcpRegistry, {
+  payload: McpRegistrySearchInput,
+  success: McpRegistrySearchResult,
+  error: Schema.Union([McpRegistryError, EnvironmentAuthorizationError]),
 });
 
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
@@ -725,6 +769,18 @@ export const WsProviderSwarmMessageAgentRpc = Rpc.make(WS_METHODS.providerSwarmM
 export const WsProviderSwarmStopAgentRpc = Rpc.make(WS_METHODS.providerSwarmStopAgent, {
   payload: ProviderSwarmStopAgentInput,
   error: Schema.Union([ProviderSwarmControlError, EnvironmentAuthorizationError]),
+});
+
+export const WsLocalImageGenerateRpc = Rpc.make(WS_METHODS.localImageGenerate, {
+  payload: LocalImageGenerateInput,
+  success: LocalImageGenerateResult,
+  error: Schema.Union([LocalImageGenerationError, EnvironmentAuthorizationError]),
+});
+
+export const WsShiryuGenFormatPromptRpc = Rpc.make(WS_METHODS.shiryuGenFormatPrompt, {
+  payload: ShiryuGenPromptFormatInput,
+  success: ShiryuGenPromptFormatResult,
+  error: EnvironmentAuthorizationError,
 });
 
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
@@ -1061,6 +1117,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRemoveKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsServerCheckMcpHealthRpc,
+  WsServerSearchMcpRegistryRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
@@ -1108,6 +1166,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderSwarmLaunchAgentRpc,
   WsProviderSwarmMessageAgentRpc,
   WsProviderSwarmStopAgentRpc,
+  WsLocalImageGenerateRpc,
+  WsShiryuGenFormatPromptRpc,
   WsVcsDiscoverRepositoriesRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,

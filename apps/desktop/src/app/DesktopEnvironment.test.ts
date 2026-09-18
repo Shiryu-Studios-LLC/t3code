@@ -117,7 +117,7 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
-  it.effect("keeps implicit development state separate from production state", () =>
+  it.effect("shares the same desktop state between development and production", () =>
     Effect.gen(function* () {
       const development = yield* makeEnvironment(
         {},
@@ -125,8 +125,12 @@ describe("DesktopEnvironment", () => {
       );
       const production = yield* makeEnvironment();
 
-      assert.equal(development.stateDir, "/Users/alice/.t3/dev");
+      assert.equal(development.stateDir, "/Users/alice/.t3/userdata");
       assert.equal(production.stateDir, "/Users/alice/.t3/userdata");
+      assert.equal(development.userDataDirName, "t3code");
+      assert.equal(production.userDataDirName, "t3code");
+      assert.equal(development.legacyUserDataDirName, "T3 Code (Alpha)");
+      assert.equal(production.legacyUserDataDirName, "T3 Code (Alpha)");
     }),
   );
 

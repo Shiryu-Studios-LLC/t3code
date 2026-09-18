@@ -131,6 +131,68 @@ describe("ClientSettings sidebar", () => {
   });
 });
 
+describe("ServerSettings local image generation", () => {
+  it("provides higher-quality local generation defaults", () => {
+    const settings = decodeServerSettings({});
+    expect(settings.imageGeneration).toMatchObject({
+      checkpoint: "auto",
+      width: 768,
+      height: 768,
+      steps: 24,
+      guidance: 5.5,
+      editStrength: 0.5,
+      autoStartComfyUi: true,
+      modelDownloadConcurrency: 3,
+      loras: [],
+    });
+  });
+
+  it("allows automatic ComfyUI startup to be disabled", () => {
+    expect(
+      decodeServerSettingsPatch({ imageGeneration: { autoStartComfyUi: false } }).imageGeneration
+        ?.autoStartComfyUi,
+    ).toBe(false);
+  });
+
+  it("accepts model download concurrency from 1 through 6", () => {
+    expect(
+      decodeServerSettingsPatch({ imageGeneration: { modelDownloadConcurrency: 1 } })
+        .imageGeneration?.modelDownloadConcurrency,
+    ).toBe(1);
+    expect(
+      decodeServerSettingsPatch({ imageGeneration: { modelDownloadConcurrency: 6 } })
+        .imageGeneration?.modelDownloadConcurrency,
+    ).toBe(6);
+    expect(() =>
+      decodeServerSettingsPatch({ imageGeneration: { modelDownloadConcurrency: 0 } }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({ imageGeneration: { modelDownloadConcurrency: 7 } }),
+    ).toThrow();
+  });
+
+  it("accepts a custom checkpoint and LoRA stack", () => {
+    const patch = decodeServerSettingsPatch({
+      imageGeneration: {
+        checkpoint: "custom",
+        customCheckpointPath: "/models/custom.safetensors",
+        loras: [
+          {
+            id: "detail",
+            name: "Detail",
+            path: "/models/loras/detail.safetensors",
+            weight: 0.75,
+            enabled: true,
+          },
+        ],
+      },
+    });
+
+    expect(patch.imageGeneration?.checkpoint).toBe("custom");
+    expect(patch.imageGeneration?.loras?.[0]?.path).toBe("/models/loras/detail.safetensors");
+  });
+});
+
 describe("ServerSettings agent team concurrency", () => {
   it("accepts up to 15 concurrent agents", () => {
     expect(decodeServerSettings({ agentTeamMaxConcurrency: 15 }).agentTeamMaxConcurrency).toBe(15);
@@ -162,6 +224,11 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("decodes a fully empty config (legacy on-disk shape) without complaint", () => {
     const decoded = decodeServerSettings({});
     expect(decoded.providerInstances).toEqual({});
+    expect(decoded.specialistModels.imageVision).toEqual({
+      instanceId: ProviderInstanceId.make("ollama"),
+      model: "qwen3-vl:4b-instruct",
+      options: [],
+    });
     // Legacy `providers` struct is still hydrated with its per-driver defaults
     // so existing call sites keep working through the migration.
     expect(decoded.providers.codex.enabled).toBe(true);
@@ -211,19 +278,21 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
 });
 
 describe("provider enabled defaults", () => {
-  it("enables only the stable bindings by default", () => {
+  it("enables every built-in provider binding by default", () => {
     const decoded = decodeServerSettings({});
     expect(decoded.providers.codex.enabled).toBe(true);
     expect(decoded.providers.claudeAgent.enabled).toBe(true);
     expect(decoded.providers.cursor.enabled).toBe(true);
-    expect(decoded.providers.grok.enabled).toBe(false);
-    expect(decoded.providers.opencode.enabled).toBe(false);
+    expect(decoded.providers.grok.enabled).toBe(true);
+    expect(decoded.providers.opencode.enabled).toBe(true);
   });
 
   it("derives per-driver defaults from the settings schemas", () => {
     expect(defaultEnabledForDriver(ProviderDriverKind.make("codex"))).toBe(true);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("cursor"))).toBe(true);
-    expect(defaultEnabledForDriver(ProviderDriverKind.make("grok"))).toBe(false);
+    expect(defaultEnabledForDriver(ProviderDriverKind.make("grok"))).toBe(true);
+    expect(defaultEnabledForDriver(ProviderDriverKind.make("gemini"))).toBe(true);
+    expect(defaultEnabledForDriver(ProviderDriverKind.make("nvidia"))).toBe(true);
     // Unknown fork drivers stay enabled; their own build decides otherwise.
     expect(defaultEnabledForDriver(ProviderDriverKind.make("ollama"))).toBe(true);
   });
@@ -232,7 +301,7 @@ describe("provider enabled defaults", () => {
     const grok = ProviderDriverKind.make("grok");
     const codex = ProviderDriverKind.make("codex");
     // No flags anywhere: driver default applies.
-    expect(resolveProviderInstanceEnabled({ driver: grok, config: {} })).toBe(false);
+    expect(resolveProviderInstanceEnabled({ driver: grok, config: {} })).toBe(true);
     expect(resolveProviderInstanceEnabled({ driver: codex, config: {} })).toBe(true);
     // Envelope flag wins over the driver default.
     expect(resolveProviderInstanceEnabled({ driver: grok, enabled: true, config: {} })).toBe(true);
@@ -379,5 +448,24 @@ describe("ServerSettingsPatch string normalization", () => {
     expect(encoded.addProjectBaseDirectory).toBe("~/Development");
     expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(encoded.providers?.codex?.launchArgs).toBe("--strict-config");
+  });
+});
+
+describe("ServerSettings T3 skills", () => {
+  it("defaults to no environment-owned skills", () => {
+    expect(decodeServerSettings({}).t3Skills).toEqual([]);
+  });
+
+  it("accepts T3 skills in settings and patches", () => {
+    const skill = {
+      id: "stream-setup",
+      name: "stream-setup",
+      displayName: "Streaming Setup",
+      description: "Prepare the stream.",
+      instructions: "Check audio and video before going live.",
+      enabled: true,
+    };
+    expect(decodeServerSettings({ t3Skills: [skill] }).t3Skills).toEqual([skill]);
+    expect(decodeServerSettingsPatch({ t3Skills: [skill] }).t3Skills).toEqual([skill]);
   });
 });

@@ -19,6 +19,8 @@ import {
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
+  LocalImageGenerationError,
+  MessageId,
   type OrchestrationClientOrigin,
   type OrchestrationCommand,
   type GitActionProgressEvent,
@@ -114,6 +116,12 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
+import * as ProcessRunner from "./processRunner.ts";
+import {
+  generateAndPersistLocalImage,
+  localImageAssistantCreatedAt,
+} from "./imageGeneration/LocalImageGeneration.ts";
+import { formatShiryuGenPromptWithLocalModel } from "./shiryuGen/ShiryuGenPromptFormatter.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
@@ -135,6 +143,8 @@ import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
+import { checkSingleMcpServerHealth } from "./mcp/McpToolBridge.ts";
+import { searchOfficialMcpRegistry } from "./mcp/McpRegistry.ts";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -1671,6 +1681,170 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "provider" },
           ),
+        [WS_METHODS.shiryuGenFormatPrompt]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.shiryuGenFormatPrompt,
+            formatShiryuGenPromptWithLocalModel(input).pipe(
+              Effect.timeout("10 seconds"),
+              Effect.catch((cause) =>
+                Effect.logWarning(
+                  "ShiryuGen local prompt formatter unavailable; using deterministic prompt.",
+                  { cause },
+                ).pipe(
+                  Effect.as({
+                    positivePrompt: input.deterministicPositivePrompt,
+                    negativePrompt: input.deterministicNegativePrompt,
+                    warnings: ["Local prompt formatter unavailable — using deterministic prompt."],
+                    usedFallback: true,
+                  }),
+                ),
+              ),
+            ),
+            { "rpc.aggregate": "local-image" },
+          ),
+        [WS_METHODS.localImageGenerate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.localImageGenerate,
+            Effect.gen(function* () {
+              const prompt = input.prompt.trim();
+              if (!prompt) {
+                return yield* new LocalImageGenerationError({
+                  message: "Image prompt cannot be empty.",
+                });
+              }
+              const createdAt = yield* nowIso;
+              // Keep local image turns stable across persistence/reload. Projection queries
+              // break timestamp ties by message id, which can place the assistant image
+              // before the user's prompt because "local-image-assistant" sorts first.
+              const assistantCreatedAt = localImageAssistantCreatedAt(createdAt);
+              const allocateMessageId = (prefix: string) =>
+                crypto.randomUUIDv4.pipe(
+                  Effect.map((uuid) => MessageId.make(`${prefix}-${uuid}`)),
+                  Effect.mapError(
+                    () =>
+                      new LocalImageGenerationError({
+                        message: "Could not allocate a local image message identifier.",
+                      }),
+                  ),
+                );
+              const [userMessageId, assistantMessageId] = yield* Effect.all([
+                allocateMessageId("local-image-user"),
+                allocateMessageId("local-image-assistant"),
+              ]);
+              const dispatchImageCommand = (command: OrchestrationCommand) =>
+                dispatchFromClient(command).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new LocalImageGenerationError({
+                        message: `Could not update the image conversation: ${String(cause)}`,
+                      }),
+                  ),
+                );
+
+              yield* serverCommandId("local-image-user").pipe(
+                Effect.mapError(
+                  () =>
+                    new LocalImageGenerationError({
+                      message: "Could not allocate the image request command.",
+                    }),
+                ),
+                Effect.flatMap((commandId) =>
+                  dispatchImageCommand({
+                    type: "thread.message.user.complete",
+                    commandId,
+                    threadId: input.threadId,
+                    messageId: userMessageId,
+                    text: input.requestText?.trim() || prompt,
+                    createdAt,
+                  }),
+                ),
+              );
+              yield* serverCommandId("local-image-generating").pipe(
+                Effect.mapError(
+                  () =>
+                    new LocalImageGenerationError({
+                      message: "Could not allocate the image progress command.",
+                    }),
+                ),
+                Effect.flatMap((commandId) =>
+                  dispatchImageCommand({
+                    type: "thread.message.assistant.delta",
+                    commandId,
+                    threadId: input.threadId,
+                    messageId: assistantMessageId,
+                    delta: "Generating image...",
+                    createdAt: assistantCreatedAt,
+                  }),
+                ),
+              );
+
+              let referenceImageFallbackPath: string | null = null;
+              if (input.referenceAttachmentId) {
+                const threadDetail = yield* projectionSnapshotQuery
+                  .getThreadDetailById(input.threadId)
+                  .pipe(Effect.orElseSucceed(() => Option.none()));
+                if (Option.isSome(threadDetail)) {
+                  for (const message of threadDetail.value.messages) {
+                    const referenceAttachment = (message.attachments ?? []).find(
+                      (attachment) =>
+                        attachment.type === "image" &&
+                        attachment.id === input.referenceAttachmentId &&
+                        attachment.source === "generated",
+                    );
+                    if (referenceAttachment?.type === "image" && referenceAttachment.savedPath) {
+                      referenceImageFallbackPath = referenceAttachment.savedPath;
+                      break;
+                    }
+                  }
+                }
+              }
+
+              const generation = generateAndPersistLocalImage(
+                { ...input, prompt },
+                referenceImageFallbackPath ? { referenceImageFallbackPath } : {},
+              ).pipe(Effect.provide(ProcessRunner.layer));
+              const result = yield* generation.pipe(
+                Effect.tapError((cause) =>
+                  serverCommandId("local-image-failed").pipe(
+                    Effect.flatMap((commandId) =>
+                      dispatchImageCommand({
+                        type: "thread.message.assistant.complete",
+                        commandId,
+                        threadId: input.threadId,
+                        messageId: assistantMessageId,
+                        text: `Image generation failed: ${cause.message}`,
+                        createdAt,
+                      }),
+                    ),
+                    Effect.ignore,
+                  ),
+                ),
+              );
+
+              const completedAt = yield* nowIso;
+              yield* serverCommandId("local-image-complete").pipe(
+                Effect.mapError(
+                  () =>
+                    new LocalImageGenerationError({
+                      message: "Could not allocate the image completion command.",
+                    }),
+                ),
+                Effect.flatMap((commandId) =>
+                  dispatchImageCommand({
+                    type: "thread.message.assistant.complete",
+                    commandId,
+                    threadId: input.threadId,
+                    messageId: assistantMessageId,
+                    text: "Image generated locally.",
+                    attachments: result.attachments,
+                    createdAt: completedAt,
+                  }),
+                ),
+              );
+              return result;
+            }),
+            { "rpc.aggregate": "local-image" },
+          ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,
@@ -1748,6 +1922,23 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverCheckMcpHealth]: ({ server }) =>
+          observeRpcEffect(
+            WS_METHODS.serverCheckMcpHealth,
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((currentSettings) => {
+                const storedServer = currentSettings.mcpServers.find((s) => s.id === server.id);
+                return Effect.promise(() => checkSingleMcpServerHealth(server, storedServer));
+              }),
+            ),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverSearchMcpRegistry]: ({ query }) =>
+          observeRpcEffect(WS_METHODS.serverSearchMcpRegistry, searchOfficialMcpRegistry(query), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,

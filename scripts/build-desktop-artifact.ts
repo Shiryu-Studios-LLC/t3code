@@ -852,6 +852,10 @@ export const DESKTOP_EXTRA_RESOURCES = [
     from: "apps/desktop/prod-resources/resource-monitor",
     to: "resource-monitor",
   },
+  {
+    from: "apps/desktop/prod-resources/kokoro",
+    to: "kokoro",
+  },
 ] as const;
 
 export interface MacPasskeySigningConfiguration {
@@ -2834,6 +2838,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* Effect.log("[desktop-artifact] Staging release app...");
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
+  yield* fs.copy(
+    path.join(repoRoot, "apps/desktop/prod-resources/kokoro"),
+    path.join(stageResourcesDir, "kokoro"),
+  );
   if (options.platform === "mac" && options.target === "dmg") {
     yield* stageDesktopDmgBackground(
       stageResourcesDir,

@@ -571,6 +571,73 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
 
+  it("restores retained history when a dormant direct-chat provider session is recreated", async () => {
+    const nvidiaSelection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("nvidia"),
+      model: "deepseek-ai/deepseek-v4-pro",
+    };
+    const harness = await createHarness({
+      threadModelSelection: nvidiaSelection,
+      startSessionEffect: (session) => {
+        const { resumeCursor: _resumeCursor, ...withoutResumeCursor } = session;
+        return Effect.succeed(withoutResumeCursor);
+      },
+    });
+    const firstCreatedAt = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-direct-history-first"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("direct-history-user-1"),
+          role: "user",
+          text: "first retained message",
+          attachments: [],
+        },
+        modelSelection: nvidiaSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: firstCreatedAt,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    // Simulate the direct-chat session being reaped while the persisted thread
+    // remains. NVIDIA/Gemini have no provider resume cursor, so the recreated
+    // session must receive retained T3 history explicitly.
+    harness.runtimeSessions.splice(0, harness.runtimeSessions.length);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-direct-history-second"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("direct-history-user-2"),
+          role: "user",
+          text: "second message after dormancy",
+          attachments: [],
+        },
+        modelSelection: nvidiaSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    const secondTurn = harness.sendTurn.mock.calls[1]?.[0] as
+      | { readonly input?: string }
+      | undefined;
+    expect(secondTurn?.input).toContain("[Previous conversation history in this thread]");
+    expect(secondTurn?.input).toContain("User: first retained message");
+    expect(secondTurn?.input).toContain("[Continuing conversation with new model/provider]");
+    expect(secondTurn?.input).toContain("second message after dormancy");
+    expect(secondTurn?.input?.match(/second message after dormancy/g)).toHaveLength(1);
+  });
+
   effectIt.effect("projects starting before a slow provider session finishes", () =>
     Effect.gen(function* () {
       const releaseStart = yield* Deferred.make<void>();

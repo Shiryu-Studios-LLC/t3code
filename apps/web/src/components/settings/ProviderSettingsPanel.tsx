@@ -73,7 +73,12 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
-import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
+import {
+  DRIVER_OPTIONS,
+  getDriverDefaultConfig,
+  getDriverDefaultEnvironment,
+  getDriverOption,
+} from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
 import {
   backgroundActivityOverrideSettings,
@@ -525,25 +530,41 @@ export function EnvironmentProviderSettings({
     const driver = providerSettings.provider;
     const defaultInstanceId = defaultInstanceIdForDriver(driver);
     const explicitInstance = settings.providerInstances?.[defaultInstanceId];
+    const liveDefaultProvider = serverProviders.find(
+      (provider) => provider.instanceId === defaultInstanceId,
+    );
     // A remote device may run a server version whose settings predate this
-    // driver, so the legacy mirror can be absent. Without either an explicit
-    // instance or a legacy blob there is nothing to render for the slot.
+    // driver, so the legacy mirror can be absent. New first-party drivers no
+    // longer need a legacy mirror; when the server advertises the default
+    // instance we synthesize its schema defaults for editing instead.
     const legacyConfig = legacyProviders[providerSettings.provider];
     const defaultLegacyConfig = defaultLegacyProviders[providerSettings.provider];
+    const schemaDefaultConfig = getDriverDefaultConfig(driver);
+    const schemaDefaultEnvironment = getDriverDefaultEnvironment(driver);
     // The envelope is the single enabled flag: keep the legacy in-config
     // flag out of the synthesized blob, or an explicit `enabled: false`
     // would keep winning over the envelope and the Switch could never
     // turn a default-off provider on.
     const synthesizedInstance = (): ProviderInstanceConfig | undefined => {
-      if (legacyConfig === undefined) {
-        return undefined;
+      if (legacyConfig !== undefined) {
+        const { enabled: legacyEnabled, ...legacyConfigRest } = legacyConfig;
+        return {
+          driver,
+          enabled: legacyEnabled,
+          ...(schemaDefaultEnvironment ? { environment: schemaDefaultEnvironment } : {}),
+          config: legacyConfigRest,
+        } satisfies ProviderInstanceConfig;
       }
-      const { enabled: legacyEnabled, ...legacyConfigRest } = legacyConfig;
-      return {
-        driver,
-        enabled: legacyEnabled,
-        config: legacyConfigRest,
-      } satisfies ProviderInstanceConfig;
+      if (liveDefaultProvider && schemaDefaultConfig !== undefined) {
+        const { enabled: configEnabled, ...configWithoutEnabled } = schemaDefaultConfig;
+        return {
+          driver,
+          enabled: typeof configEnabled === "boolean" ? configEnabled : liveDefaultProvider.enabled,
+          ...(schemaDefaultEnvironment ? { environment: schemaDefaultEnvironment } : {}),
+          config: configWithoutEnabled,
+        } satisfies ProviderInstanceConfig;
+      }
+      return undefined;
     };
     const effectiveInstance: ProviderInstanceConfig | undefined =
       explicitInstance ?? synthesizedInstance();
@@ -656,7 +677,15 @@ export function EnvironmentProviderSettings({
     >;
     const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
     const defaultLegacyProvider = defaultLegacyProviders[driverKind];
-    if (defaultLegacyProvider === undefined) return;
+    if (defaultLegacyProvider === undefined) {
+      updateSettings({
+        providerInstances: withoutProviderInstanceKey(
+          settings.providerInstances,
+          defaultInstanceId,
+        ),
+      });
+      return;
+    }
     updateSettings({
       providers: {
         ...settings.providers,
@@ -864,6 +893,8 @@ export function EnvironmentProviderSettings({
                 hiddenModels={modelPreferences.hiddenModels}
                 favoriteModels={favoriteModels}
                 modelOrder={modelPreferences.modelOrder}
+                onResyncModels={refreshProviders}
+                isResyncing={isRefreshingProviders}
                 onHiddenModelsChange={(hiddenModels) =>
                   updateProviderModelPreferences(row.instanceId, {
                     ...modelPreferences,

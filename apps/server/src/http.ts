@@ -46,6 +46,10 @@ import {
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./httpCors.ts";
+import {
+  OmniRouteTextToSpeechError,
+  synthesizeOmniRouteSpeech,
+} from "./textToSpeech/OmniRouteTextToSpeech.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -63,6 +67,15 @@ export function assetResponseHeaders(filePath: string): Record<string, string> {
     ...(lowerPath.endsWith(".svg")
       ? { "Content-Security-Policy": SVG_CONTENT_SECURITY_POLICY }
       : {}),
+  };
+}
+
+export function staticWebResponseHeaders(filePath: string): Record<string, string> {
+  const lowerPath = filePath.toLowerCase();
+  const isDocument = lowerPath.endsWith(".html") || lowerPath.endsWith(".htm");
+  return {
+    "Cache-Control": isDocument ? "no-store" : "private, max-age=3600",
+    "X-Content-Type-Options": "nosniff",
   };
 }
 
@@ -156,6 +169,23 @@ export const textToSpeechHttpApiLayer = HttpApiBuilder.group(
     return handlers.handle(
       "synthesize",
       Effect.fn("environment.textToSpeech.synthesize")(function* ({ payload }) {
+        if (payload.provider === "omniroute") {
+          const speech = yield* synthesizeOmniRouteSpeech({
+            text: payload.text,
+            voice: payload.voice,
+            rate: payload.rate,
+          }).pipe(
+            Effect.mapError(
+              (cause: OmniRouteTextToSpeechError) =>
+                new EnvironmentHttpInternalServerError({ message: cause.detail }),
+            ),
+          );
+          return {
+            audioBase64: Buffer.from(speech.bytes).toString("base64"),
+            mimeType: speech.mimeType,
+          };
+        }
+
         const apiKey = process.env.OPENAI_API_KEY?.trim();
         if (!apiKey) {
           return yield* new EnvironmentHttpInternalServerError({
@@ -495,6 +525,7 @@ export const staticAndDevRouteLayer = HttpRouter.add(
       return HttpServerResponse.uint8Array(indexData, {
         status: 200,
         contentType: "text/html; charset=utf-8",
+        headers: staticWebResponseHeaders(indexPath),
       });
     }
 
@@ -507,6 +538,7 @@ export const staticAndDevRouteLayer = HttpRouter.add(
     return HttpServerResponse.uint8Array(data, {
       status: 200,
       contentType,
+      headers: staticWebResponseHeaders(filePath),
     });
   }),
 );

@@ -71,14 +71,18 @@ export const makeNvidiaTextGeneration = Effect.fn("makeNvidiaTextGeneration")(fu
     );
     const response = yield* client.execute(request).pipe(
       Effect.flatMap(HttpClientResponse.schemaBodyJson(NvidiaResponse)),
-      Effect.mapError(
-        (cause) =>
-          new TextGenerationError({
-            operation: input.operation,
-            detail: "NVIDIA text generation request failed.",
-            cause,
-          }),
-      ),
+      Effect.mapError((cause) => {
+        const raw = String(cause);
+        let detail = "NVIDIA text generation request failed.";
+        if (raw.includes("Function") && raw.includes("Not found for account")) {
+          detail = `NVIDIA text generation failed: ${raw} (Account missing Public API Endpoints permission on build.nvidia.com)`;
+        }
+        return new TextGenerationError({
+          operation: input.operation,
+          detail,
+          cause,
+        });
+      }),
     );
     const rawText = response.choices[0]?.message.content;
     if (!rawText) {

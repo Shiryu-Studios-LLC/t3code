@@ -323,6 +323,28 @@ describe("instance-scoped model selection", () => {
       model: "openai/gpt-5.5",
     });
   });
+
+  it("uses a non-empty Ollama default when the ready instance has not listed models yet", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("ollama"),
+        instanceId: "ollama",
+        models: [],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("ollama"),
+        model: "",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers)).toEqual({
+      instanceId: ProviderInstanceId.make("ollama"),
+      model: "qwen3:8b",
+    });
+  });
 });
 
 describe("withoutPlanAgentSelection", () => {

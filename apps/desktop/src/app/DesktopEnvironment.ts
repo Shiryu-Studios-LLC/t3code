@@ -85,7 +85,7 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Studio";
+const APP_BASE_NAME = "ShiryuGen";
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -174,12 +174,14 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const displayName = branding.displayName;
   const stateDir = resolveDesktopStateDir({
     baseDir,
-    isDevelopment,
     joinPath: path.join,
-    t3Home: config.t3Home,
   });
-  const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
-  const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+  // Alpha and Dev intentionally use the same Electron profile. Besides sharing
+  // renderer-local state such as ShiryuGen Character Kits, Electron/Clerk's
+  // single-instance lock is scoped to this directory, so only one channel can
+  // own the profile at a time.
+  const userDataDirName = "t3code";
+  const legacyUserDataDirName = "T3 Code (Alpha)";
   const linuxApplicationsDir = path.join(
     Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
     "applications",

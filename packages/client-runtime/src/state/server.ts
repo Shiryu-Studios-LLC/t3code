@@ -770,6 +770,30 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    generateLocalImage: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:generate-local-image",
+      tag: WS_METHODS.localImageGenerate,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => `${environmentId}:${input.threadId}`,
+      },
+    }),
+    formatShiryuGenPrompt: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:shiryugen-format-prompt",
+      tag: WS_METHODS.shiryuGenFormatPrompt,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
+    checkMcpHealth: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:check-mcp-health",
+      tag: WS_METHODS.serverCheckMcpHealth,
+    }),
+    searchMcpRegistry: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:search-mcp-registry",
+      tag: WS_METHODS.serverSearchMcpRegistry,
+    }),
     signalProcess: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:signal-process",
       tag: WS_METHODS.serverSignalProcess,

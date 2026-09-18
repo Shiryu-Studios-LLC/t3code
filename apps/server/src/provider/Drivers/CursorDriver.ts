@@ -1,5 +1,5 @@
 /**
- * CursorDriver — `ProviderDriver` for the Cursor Agent (`cursor-agent`) runtime.
+ * CursorDriver — `ProviderDriver` for the Cursor Agent (`agent`) runtime.
  *
  * Cursor exposes an ACP-based CLI. Model catalog and capability refreshes
  * happen during the managed provider status check via Cursor's
@@ -58,7 +58,11 @@ const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
     makeProviderMaintenanceCapabilities({
       provider: DRIVER_KIND,
       packageName: null,
-      updateExecutable: options?.binaryPath?.trim() || "cursor-agent",
+      // Use the exact executable we already resolved for provider probing.
+      // The desktop process PATH can differ from the per-provider PATH (most
+      // notably for ~/.local/bin), so spawning the bare `agent` command again
+      // can fail even while Cursor itself is healthy.
+      updateExecutable: options?.resolvedCommandPath ?? options?.binaryPath?.trim() ?? "agent",
       updateArgs: ["update"],
       updateLockKey: "cursor-agent",
     }),

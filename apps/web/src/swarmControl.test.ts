@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  agentAccent,
   buildSwarmCommand,
   canLaunchSwarmAgent,
   swarmIntegrationState,
@@ -11,6 +12,11 @@ import type {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 
 describe("swarm controls", () => {
+  it("gives each agent a stable identity accent without storing extra state", () => {
+    expect(agentAccent("agent-1")).toEqual(agentAccent("agent-1"));
+    expect(agentAccent("agent-1")).not.toEqual(agentAccent("agent-2"));
+  });
+
   it("allows manual and hybrid launches until the configured 15-agent ceiling", () => {
     expect(canLaunchSwarmAgent("hybrid", 14, 15, true)).toBe(true);
     expect(canLaunchSwarmAgent("manual", 14, 15, true)).toBe(true);

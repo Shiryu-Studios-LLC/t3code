@@ -1,12 +1,12 @@
 import { expect, it } from "@effect/vitest";
 import { describe } from "vite-plus/test";
 import { HttpRouter } from "effect/unstable/http";
-
 import {
   assetResponseHeaders,
   isLoopbackHostname,
   mcpOAuthCallbackRouteLayer,
   resolveDevRedirectUrl,
+  staticWebResponseHeaders,
 } from "./http.ts";
 
 describe("http dev routing", () => {
@@ -59,6 +59,26 @@ describe("assetResponseHeaders", () => {
     expect(assetResponseHeaders("/workspace/PAGE.HTM")).toHaveProperty(
       "Content-Type",
       "text/html; charset=utf-8",
+    );
+  });
+});
+
+describe("staticWebResponseHeaders", () => {
+  it("never caches the web app shell so browser clients pick up desktop-parity builds on refresh", () => {
+    expect(staticWebResponseHeaders("/index.html")).toMatchObject({
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+    expect(staticWebResponseHeaders("/nested/page.HTM")).toHaveProperty(
+      "Cache-Control",
+      "no-store",
+    );
+  });
+
+  it("allows ordinary hashed static assets to be cached briefly", () => {
+    expect(staticWebResponseHeaders("/assets/index-abc123.js")).toHaveProperty(
+      "Cache-Control",
+      "private, max-age=3600",
     );
   });
 });

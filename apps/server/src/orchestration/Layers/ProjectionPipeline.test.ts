@@ -2338,6 +2338,130 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("retains earlier non-checkpointed conversation turns after revert", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const threadId = ThreadId.make("thread-general-chat-revert");
+      const projectId = ProjectId.make("project-general-chat-revert");
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-general-chat-revert-project"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: "2026-02-25T12:00:00.000Z",
+        commandId: CommandId.make("cmd-general-chat-revert-project"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-general-chat-revert-project"),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "General Chat",
+          workspaceRoot: "/tmp/general-chat",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-02-25T12:00:00.000Z",
+          updatedAt: "2026-02-25T12:00:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-general-chat-revert-thread"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-02-25T12:00:01.000Z",
+        commandId: CommandId.make("cmd-general-chat-revert-thread"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-general-chat-revert-thread"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "General Chat",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("nvidia"),
+            model: "deepseek",
+          },
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-02-25T12:00:01.000Z",
+          updatedAt: "2026-02-25T12:00:01.000Z",
+        },
+      });
+
+      const appendMessage = (
+        sequence: number,
+        messageId: string,
+        role: "user" | "assistant",
+        text: string,
+        turnId: string | null,
+      ) =>
+        appendAndProject({
+          type: "thread.message-sent",
+          eventId: EventId.make(`evt-general-chat-revert-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: `2026-02-25T12:00:0${sequence}.000Z`,
+          commandId: CommandId.make(`cmd-general-chat-revert-${sequence}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-general-chat-revert-${sequence}`),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make(messageId),
+            role,
+            text,
+            turnId: turnId === null ? null : TurnId.make(turnId),
+            streaming: false,
+            createdAt: `2026-02-25T12:00:0${sequence}.000Z`,
+            updatedAt: `2026-02-25T12:00:0${sequence}.000Z`,
+          },
+        });
+
+      yield* appendMessage(2, "general-user-1", "user", "first prompt", null);
+      yield* appendMessage(3, "general-assistant-1", "assistant", "first answer", "turn-1");
+      yield* appendMessage(4, "general-user-2", "user", "second prompt", null);
+      yield* appendMessage(5, "general-assistant-2", "assistant", "second answer", "turn-2");
+      yield* appendAndProject({
+        type: "thread.reverted",
+        eventId: EventId.make("evt-general-chat-reverted"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-02-25T12:00:06.000Z",
+        commandId: CommandId.make("cmd-general-chat-reverted"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-general-chat-reverted"),
+        metadata: {},
+        payload: { threadId, turnCount: 1 },
+      });
+
+      const messageRows = yield* sql<{ readonly messageId: string; readonly role: string }>`
+        SELECT message_id AS "messageId", role
+        FROM projection_thread_messages
+        WHERE thread_id = 'thread-general-chat-revert'
+        ORDER BY created_at ASC, message_id ASC
+      `;
+      assert.deepEqual(messageRows, [
+        { messageId: "general-user-1", role: "user" },
+        { messageId: "general-assistant-1", role: "assistant" },
+      ]);
+      const turnRows = yield* sql<{ readonly turnId: string }>`
+        SELECT turn_id AS "turnId"
+        FROM projection_turns
+        WHERE thread_id = 'thread-general-chat-revert' AND turn_id IS NOT NULL
+        ORDER BY requested_at ASC, turn_id ASC
+      `;
+      assert.deepEqual(turnRows, [{ turnId: "turn-1" }]);
+    }),
+  );
+
   it.effect("does not fallback-retain messages whose turnId is removed by revert", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

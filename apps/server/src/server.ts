@@ -26,6 +26,12 @@ import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
+import { CivitaiService } from "./shiryuGen/CivitaiService.ts";
+import { CivitaiInstallManager } from "./shiryuGen/CivitaiInstallManager.ts";
+import { CivitaiModelLibrary } from "./shiryuGen/CivitaiModelLibrary.ts";
+import { ComfyUiClient } from "./shiryuGen/ComfyUiClient.ts";
+import { ComfyUiRuntime } from "./shiryuGen/ComfyUiRuntime.ts";
+import { shiryuGenHttpApiLayer } from "./shiryuGen/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
@@ -456,6 +462,7 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(textToSpeechHttpApiLayer),
+      Layer.provide(shiryuGenHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),
     ),
     otlpTracesProxyRouteLayer,
@@ -470,6 +477,11 @@ export const makeRoutesLayer = Layer.mergeAll(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
+  Layer.provide(CivitaiService.layer),
+  Layer.provide(CivitaiInstallManager.layer),
+  Layer.provide(CivitaiModelLibrary.layer),
+  Layer.provide(ComfyUiClient.layer),
+  Layer.provide(ComfyUiRuntime.layer),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer),
   Layer.provide(commandReadinessLayer),

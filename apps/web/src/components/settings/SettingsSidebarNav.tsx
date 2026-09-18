@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -65,6 +66,24 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   label: SETTINGS_SECTION_LABELS[to],
   icon: SETTINGS_SECTION_ICONS[to],
 }));
+
+const SETTINGS_NAV_GROUPS: ReadonlyArray<{
+  readonly label: string;
+  readonly paths: ReadonlyArray<SettingsPath>;
+}> = [
+  {
+    label: "Workspace",
+    paths: ["/settings/general", "/settings/appearance", "/settings/keybindings"],
+  },
+  {
+    label: "AI & Tools",
+    paths: ["/settings/providers", "/settings/integrations"],
+  },
+  {
+    label: "Projects & Data",
+    paths: ["/settings/source-control", "/settings/connections", "/settings/archived"],
+  },
+];
 
 function SettingsSectionIcon({ to }: { to: SettingsPath }) {
   const Icon = SETTINGS_SECTION_ICONS[to];
@@ -265,21 +284,32 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))
-              : SETTINGS_NAV_ITEMS.map((item) => {
-                  const Icon = item.icon;
-                  const isActive = pathname === item.to || pathname.startsWith(`${item.to}/`);
-                  return (
-                    <SidebarMenuItem key={item.to}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        onClick={() => handleSectionClick(item.to)}
-                      >
-                        <Icon />
-                        <span className="truncate">{item.label}</span>
-                      </SidebarMenuButton>
+              : SETTINGS_NAV_GROUPS.map((group) => (
+                  <Fragment key={group.label}>
+                    <SidebarMenuItem aria-hidden="true">
+                      <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-sidebar-muted-foreground/55">
+                        {group.label}
+                      </div>
                     </SidebarMenuItem>
-                  );
-                })}
+                    {group.paths.map((path) => {
+                      const item = SETTINGS_NAV_ITEMS.find((candidate) => candidate.to === path);
+                      if (!item) return null;
+                      const Icon = item.icon;
+                      const isActive = pathname === item.to || pathname.startsWith(`${item.to}/`);
+                      return (
+                        <SidebarMenuItem key={item.to}>
+                          <SidebarMenuButton
+                            isActive={isActive}
+                            onClick={() => handleSectionClick(item.to)}
+                          >
+                            <Icon />
+                            <span className="truncate">{item.label}</span>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      );
+                    })}
+                  </Fragment>
+                ))}
           </SidebarMenu>
         </SidebarGroup>
       </SidebarContent>

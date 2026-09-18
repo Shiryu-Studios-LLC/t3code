@@ -880,6 +880,72 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.latestTurn?.turnId).toBe("turn-1");
       }
     });
+
+    it("rewinds checkpointless conversations by user-turn count", () => {
+      const threadWithConversation: OrchestrationThread = {
+        ...baseThread,
+        messages: [
+          {
+            id: MessageId.make("user-1"),
+            role: "user",
+            text: "hello",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-04-01T01:00:00.000Z",
+            updatedAt: "2026-04-01T01:00:00.000Z",
+          },
+          {
+            id: MessageId.make("assistant-1"),
+            role: "assistant",
+            text: "hi",
+            turnId: TurnId.make("provider-turn-1"),
+            streaming: false,
+            createdAt: "2026-04-01T01:01:00.000Z",
+            updatedAt: "2026-04-01T01:01:00.000Z",
+          },
+          {
+            id: MessageId.make("user-2"),
+            role: "user",
+            text: "what can you do?",
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-04-01T02:00:00.000Z",
+            updatedAt: "2026-04-01T02:00:00.000Z",
+          },
+          {
+            id: MessageId.make("assistant-2"),
+            role: "assistant",
+            text: "lots",
+            turnId: TurnId.make("provider-turn-2"),
+            streaming: false,
+            createdAt: "2026-04-01T02:01:00.000Z",
+            updatedAt: "2026-04-01T02:01:00.000Z",
+          },
+        ],
+        checkpoints: [],
+      };
+
+      const result = applyThreadDetailEvent(threadWithConversation, {
+        ...baseEventFields,
+        sequence: 15,
+        occurredAt: "2026-04-01T03:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.reverted",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          turnCount: 1,
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages.map((message) => message.id)).toEqual([
+          "user-1",
+          "assistant-1",
+        ]);
+      }
+    });
   });
 
   describe("no-op events", () => {

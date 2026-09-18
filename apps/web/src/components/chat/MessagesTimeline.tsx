@@ -14,6 +14,11 @@ import {
 
 const EMPTY_AGENT_PANEL_MODEL = emptyAgentPanelModel();
 const NOOP_OPEN_AGENTS = () => {};
+const NOOP_REGENERATE_GENERATED_IMAGE = (_image: ChatImageAttachment) => {};
+const NOOP_EDIT_GENERATED_IMAGE = async (
+  _image: ChatImageAttachment,
+  _instruction: string,
+): Promise<boolean> => false;
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import {
   createContext,
@@ -51,15 +56,19 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  DownloadIcon,
   EyeIcon,
   FileIcon,
+  FolderOpenIcon,
   GlobeIcon,
   HammerIcon,
+  ImagePlusIcon,
   MessageCircleIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
   PauseIcon,
   PlayIcon,
+  RefreshCwIcon,
   SearchIcon,
   SquareIcon,
   SquarePenIcon,
@@ -71,7 +80,9 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
+import { Textarea } from "../ui/textarea";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
+import { AddGeneratedImageToCharacterDialog } from "../shiryugen/AddGeneratedImageToCharacterDialog";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
@@ -124,6 +135,7 @@ import {
   subscribeTextToSpeechPlayback,
 } from "~/tts/ttsController";
 import { useUiStateStore } from "~/uiStateStore";
+import { readLocalApi } from "~/localApi";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 
@@ -158,7 +170,11 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
+  onEditUserMessage: (messageId: MessageId, text: string) => Promise<boolean>;
+  editableUserMessageIds: ReadonlySet<MessageId>;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  onRegenerateGeneratedImage: (image: ChatImageAttachment) => void;
+  onEditGeneratedImage: (image: ChatImageAttachment, instruction: string) => Promise<boolean>;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
@@ -235,8 +251,12 @@ interface MessagesTimelineProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
+  onEditUserMessage: (messageId: MessageId, text: string) => Promise<boolean>;
+  editableUserMessageIds: ReadonlySet<MessageId>;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
+  onRegenerateGeneratedImage?: (image: ChatImageAttachment) => void;
+  onEditGeneratedImage?: (image: ChatImageAttachment, instruction: string) => Promise<boolean>;
   activeThreadEnvironmentId: EnvironmentId;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -280,8 +300,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
+  onEditUserMessage,
+  editableUserMessageIds,
   isRevertingCheckpoint,
   onImageExpand,
+  onRegenerateGeneratedImage = NOOP_REGENERATE_GENERATED_IMAGE,
+  onEditGeneratedImage = NOOP_EDIT_GENERATED_IMAGE,
   activeThreadEnvironmentId,
   markdownCwd,
   resolvedTheme,
@@ -539,7 +563,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      onEditUserMessage,
+      editableUserMessageIds,
       onImageExpand,
+      onRegenerateGeneratedImage,
+      onEditGeneratedImage,
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
@@ -555,7 +583,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
+      onEditUserMessage,
+      editableUserMessageIds,
       onImageExpand,
+      onRegenerateGeneratedImage,
+      onEditGeneratedImage,
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
@@ -1027,6 +1059,35 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
   const regularImages = userImages.filter((image) => !image.name.startsWith("preview-annotation-"));
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
+  const editableText = elementContextState.promptText.trim();
+  const canEditAndRegenerate =
+    ctx.editableUserMessageIds.has(row.message.id) &&
+    userAttachments.length === 0 &&
+    terminalContexts.length === 0 &&
+    elementContexts.length === 0 &&
+    previewAnnotations.length === 0 &&
+    editableText.length > 0;
+  const activity = use(TimelineRowActivityCtx);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(editableText);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  useEffect(() => {
+    if (!isEditing) setEditText(editableText);
+  }, [editableText, isEditing]);
+
+  const saveEdit = async () => {
+    const nextText = editText.trim();
+    if (!nextText || isSavingEdit || activity.isWorking || activity.isRevertingCheckpoint) return;
+    setIsSavingEdit(true);
+    try {
+      if (await ctx.onEditUserMessage(row.message.id, nextText)) {
+        setIsEditing(false);
+      }
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
 
   return (
     <div className="group flex flex-col items-end gap-1">
@@ -1034,14 +1095,17 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         {userFiles.length > 0 && (
           <div className="mb-2 flex max-w-[420px] flex-wrap gap-1.5">
             {userFiles.map((file) => (
-              <div
-                key={file.id}
-                className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border/80 bg-background/70 px-2.5 py-2 text-xs"
-                title={file.name}
-              >
-                <FileIcon className="size-3.5 shrink-0 text-secondary-label" />
-                <span className="truncate">{file.name}</span>
-              </div>
+              <Tooltip key={file.id}>
+                <TooltipTrigger
+                  render={
+                    <div className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border/80 bg-background/70 px-2.5 py-2 text-xs" />
+                  }
+                >
+                  <FileIcon className="size-3.5 shrink-0 text-secondary-label" />
+                  <span className="truncate">{file.name}</span>
+                </TooltipTrigger>
+                <TooltipPopup>{file.name}</TooltipPopup>
+              </Tooltip>
             ))}
           </div>
         )}
@@ -1095,14 +1159,64 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             ))}
           </div>
         ) : null}
-        <CollapsibleUserMessageBody
-          text={elementContextState.promptText}
-          terminalContexts={terminalContexts}
-          skills={ctx.skills}
-          markdownCwd={ctx.markdownCwd}
-        />
+        {isEditing ? (
+          <div className="min-w-[min(34rem,70vw)] space-y-2">
+            <Textarea
+              autoFocus
+              value={editText}
+              onChange={(event) => setEditText(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  void saveEdit();
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setEditText(editableText);
+                  setIsEditing(false);
+                }
+              }}
+              className="min-h-24 resize-y bg-background/65 text-sm"
+              aria-label="Edit sent message"
+            />
+            <div className="flex justify-end gap-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={isSavingEdit}
+                onClick={() => {
+                  setEditText(editableText);
+                  setIsEditing(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={
+                  isSavingEdit ||
+                  editText.trim().length === 0 ||
+                  activity.isWorking ||
+                  activity.isRevertingCheckpoint
+                }
+                onClick={() => void saveEdit()}
+              >
+                {isSavingEdit ? "Regenerating…" : "Save & regenerate"}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <CollapsibleUserMessageBody
+            text={elementContextState.promptText}
+            terminalContexts={terminalContexts}
+            skills={ctx.skills}
+            markdownCwd={ctx.markdownCwd}
+          />
+        )}
       </div>
-      <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
+      <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-100 transition-opacity duration-200 md:opacity-0 md:focus-within:opacity-100 md:group-hover:opacity-100 [@media(hover:none)]:opacity-100">
         <div className="flex shrink-0 items-center gap-2">
           <Tooltip>
             <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
@@ -1113,6 +1227,28 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             </TooltipPopup>
           </Tooltip>
           <div className="flex items-center gap-0.5">
+            {canEditAndRegenerate && !isEditing ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      disabled={activity.isRevertingCheckpoint || activity.isWorking}
+                      onClick={() => {
+                        setEditText(editableText);
+                        setIsEditing(true);
+                      }}
+                      aria-label="Edit message and regenerate response"
+                    />
+                  }
+                >
+                  <SquarePenIcon className="size-3" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">Edit message and regenerate response</TooltipPopup>
+              </Tooltip>
+            ) : null}
             {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
             {displayedUserMessage.copyText && (
               <MessageCopyButton text={displayedUserMessage.copyText} variant="ghost" />
@@ -1138,13 +1274,13 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
             variant="ghost"
             disabled={activity.isRevertingCheckpoint || activity.isWorking}
             onClick={() => ctx.onRevertUserMessage(messageId)}
-            aria-label="Revert to this message"
+            aria-label="Undo changes up to this point"
           />
         }
       >
         <Undo2Icon className="size-3" />
       </TooltipTrigger>
-      <TooltipPopup side="top">Revert to this message</TooltipPopup>
+      <TooltipPopup side="top">Undo changes up to this point</TooltipPopup>
     </Tooltip>
   );
 }
@@ -1169,9 +1305,356 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
   );
 }
 
+function downloadChatImage(image: ChatImageAttachment): void {
+  if (!image.previewUrl || typeof document === "undefined") return;
+  const anchor = document.createElement("a");
+  anchor.href = image.previewUrl;
+  anchor.download = image.name;
+  anchor.rel = "noopener noreferrer";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+function AssistantImageGallery({ images }: { images: ReadonlyArray<ChatImageAttachment> }) {
+  const ctx = use(TimelineRowCtx);
+  const [editingImageId, setEditingImageId] = useState<string | null>(null);
+  const [addingToCharacterImageId, setAddingToCharacterImageId] = useState<string | null>(null);
+  const [editInstruction, setEditInstruction] = useState("");
+  const [isApplyingEdit, setIsApplyingEdit] = useState(false);
+  const single = images.length === 1;
+  const canRevealLocalFiles =
+    typeof window !== "undefined" && Boolean(window.desktopBridge?.showItemInFolder);
+
+  const closeEditor = () => {
+    if (isApplyingEdit) return;
+    setEditingImageId(null);
+    setEditInstruction("");
+  };
+
+  const applyEdit = async (image: ChatImageAttachment) => {
+    const instruction = editInstruction.trim();
+    if (!instruction || isApplyingEdit) return;
+    setIsApplyingEdit(true);
+    try {
+      const applied = await ctx.onEditGeneratedImage(image, instruction);
+      if (applied) {
+        setEditingImageId(null);
+        setEditInstruction("");
+      }
+    } finally {
+      setIsApplyingEdit(false);
+    }
+  };
+
+  return (
+    <div
+      className={cn(
+        "mb-3 grid gap-2",
+        single
+          ? "mx-auto w-full max-w-[480px] grid-cols-1"
+          : "max-w-3xl grid-cols-1 sm:grid-cols-2",
+      )}
+      data-assistant-image-gallery="true"
+    >
+      {images.map((image) => {
+        const generated = image.source === "generated";
+        const isEditing = editingImageId === image.id;
+        return (
+          <div
+            key={image.id}
+            className="min-w-0 overflow-hidden rounded-xl border border-border/70 bg-background/55"
+          >
+            {image.previewUrl ? (
+              <button
+                type="button"
+                className={cn(
+                  "cursor-zoom-in overflow-hidden bg-muted/25",
+                  single ? "flex h-[480px] w-full items-center justify-center" : "block w-full",
+                )}
+                aria-label={`Preview ${image.name}`}
+                onClick={() => {
+                  const preview = buildExpandedImagePreview(images, image.id);
+                  if (preview) ctx.onImageExpand(preview);
+                }}
+              >
+                <img
+                  src={image.previewUrl}
+                  alt={image.name}
+                  className={cn(
+                    "object-contain",
+                    single ? "block max-h-[480px] max-w-full" : "block h-auto max-h-[320px] w-full",
+                  )}
+                />
+              </button>
+            ) : (
+              <div className="flex min-h-48 items-center justify-center px-4 py-8 text-center text-xs text-secondary-label">
+                {image.name}
+              </div>
+            )}
+            {image.generationDetails ? (
+              <details className="border-t border-border/60 px-3 py-2 text-xs">
+                <summary className="cursor-pointer font-medium">Generation details</summary>
+                <dl className="mt-2 space-y-1 break-words">
+                  {image.generationDetails.character ? (
+                    <>
+                      <dt>Character / scene</dt>
+                      <dd>
+                        {image.generationDetails.character} ·{" "}
+                        {image.generationDetails.sceneMode ?? "scene"}
+                      </dd>
+                    </>
+                  ) : null}
+                  {image.generationDetails.policyVersion ? (
+                    <>
+                      <dt>Character policy</dt>
+                      <dd>
+                        {image.generationDetails.policyVersion} ·{" "}
+                        {image.generationDetails.modelProfile ?? image.generationDetails.profile} ·
+                        reference {image.generationDetails.referenceState ?? "none"}
+                      </dd>
+                    </>
+                  ) : null}
+                  <dt>Checkpoint / profile</dt>
+                  <dd>
+                    {image.generationDetails.checkpoint} · {image.generationDetails.profile} ·{" "}
+                    {image.generationDetails.baseModel}
+                  </dd>
+                  <dt>Renderer</dt>
+                  <dd>
+                    {image.generationDetails.engine} · {image.generationDetails.sampler} /{" "}
+                    {image.generationDetails.scheduler}
+                  </dd>
+                  <dt>Settings</dt>
+                  <dd>
+                    {image.generationDetails.steps} steps · CFG {image.generationDetails.guidance} ·
+                    Seed {image.generationDetails.seed} · {image.generationDetails.width} ×{" "}
+                    {image.generationDetails.height} · Denoise {image.generationDetails.denoise}
+                  </dd>
+                  <dt>Formatter</dt>
+                  <dd>{image.generationDetails.formatterModel ?? "Not recorded"}</dd>
+                  <dt>Prompt source</dt>
+                  <dd>{image.generationDetails.promptSource ?? "Not recorded"}</dd>
+                  <dt>Formatter fallback</dt>
+                  <dd>
+                    {image.generationDetails.formatterFallback === undefined
+                      ? "Not recorded"
+                      : image.generationDetails.formatterFallback
+                        ? "Yes"
+                        : "No"}
+                  </dd>
+                  <dt>Checkpoint filename</dt>
+                  <dd>{image.generationDetails.checkpoint.split(/[\\/]/).pop()}</dd>
+                  {image.generationDetails.checkpointHash ? (
+                    <>
+                      <dt>Checkpoint hash</dt>
+                      <dd>{image.generationDetails.checkpointHash}</dd>
+                    </>
+                  ) : null}
+                  <dt>LoRAs</dt>
+                  <dd>
+                    {image.generationDetails.loras
+                      .map((lora) => `${lora.name} (${lora.weight})`)
+                      .join(", ") || "None"}
+                  </dd>
+                  <dt>Positive prompt</dt>
+                  <dd className="whitespace-pre-wrap">{image.generationDetails.positivePrompt}</dd>
+                  <dt>Negative prompt</dt>
+                  <dd className="whitespace-pre-wrap">{image.generationDetails.negativePrompt}</dd>
+                </dl>
+              </details>
+            ) : null}
+            <div className="border-border/60 border-t px-2.5 py-2">
+              <div className="flex flex-wrap items-center gap-1">
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  className="h-7 gap-1.5 px-2 text-xs"
+                  disabled={!image.previewUrl}
+                  onClick={() => downloadChatImage(image)}
+                >
+                  <DownloadIcon className="size-3.5" />
+                  Download
+                </Button>
+                {generated ? (
+                  <>
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="h-7 gap-1.5 px-2 text-xs"
+                      disabled={!image.savedPath || !canRevealLocalFiles}
+                      title={
+                        canRevealLocalFiles
+                          ? "Open the generated image in its folder"
+                          : "Open folder is available in the desktop app"
+                      }
+                      onClick={() => {
+                        if (!image.savedPath) return;
+                        void readLocalApi()?.shell.showItemInFolder?.(image.savedPath);
+                      }}
+                    >
+                      <FolderOpenIcon className="size-3.5" />
+                      Open folder
+                    </Button>
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="h-7 gap-1.5 px-2 text-xs"
+                      disabled={isApplyingEdit}
+                      onClick={() => ctx.onRegenerateGeneratedImage(image)}
+                    >
+                      <RefreshCwIcon className="size-3.5" />
+                      Regenerate
+                    </Button>
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="h-7 gap-1.5 px-2 text-xs"
+                      aria-label={`Add ${image.name} to character kit`}
+                      disabled={isApplyingEdit}
+                      onClick={() => setAddingToCharacterImageId(image.id)}
+                    >
+                      <ImagePlusIcon className="size-3.5" />
+                      Add to Character
+                    </Button>
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost"
+                      className="h-7 gap-1.5 px-2 text-xs"
+                      aria-expanded={isEditing}
+                      aria-label={`Edit ${image.name}`}
+                      disabled={isApplyingEdit}
+                      onClick={() => {
+                        if (isEditing) {
+                          closeEditor();
+                          return;
+                        }
+                        setEditingImageId(image.id);
+                        setEditInstruction("");
+                      }}
+                    >
+                      <SquarePenIcon className="size-3.5" />
+                      Edit
+                    </Button>
+                  </>
+                ) : null}
+              </div>
+              {generated && image.savedPath ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <div className="mt-1 truncate px-1 text-[10px] leading-4 text-muted-foreground/55" />
+                    }
+                  >
+                    Saved to {image.savedPath}
+                  </TooltipTrigger>
+                  <TooltipPopup>{image.savedPath}</TooltipPopup>
+                </Tooltip>
+              ) : null}
+              {generated ? (
+                <AddGeneratedImageToCharacterDialog
+                  image={image}
+                  environmentId={ctx.activeThreadEnvironmentId}
+                  open={addingToCharacterImageId === image.id}
+                  onOpenChange={(open) => setAddingToCharacterImageId(open ? image.id : null)}
+                />
+              ) : null}
+              {generated && isEditing ? (
+                <div
+                  className="mt-2 space-y-2 rounded-lg border border-border/70 bg-muted/20 p-2.5"
+                  data-generated-image-editor="true"
+                >
+                  <div className="flex items-start gap-2.5">
+                    {image.previewUrl ? (
+                      <img
+                        src={image.previewUrl}
+                        alt="Selected image to edit"
+                        className="h-16 w-16 shrink-0 rounded-md border border-border/70 object-cover"
+                      />
+                    ) : null}
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-1 text-xs font-medium">Describe the edit</div>
+                      <Textarea
+                        autoFocus
+                        value={editInstruction}
+                        onChange={(event) => setEditInstruction(event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                            event.preventDefault();
+                            void applyEdit(image);
+                          }
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            closeEditor();
+                          }
+                        }}
+                        className="min-h-20 resize-y bg-background/75 text-sm"
+                        placeholder="How should ShiryuGen change this image?"
+                        aria-label="Describe the image edit"
+                        disabled={isApplyingEdit}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+                    {[
+                      "make it red",
+                      "make it more realistic",
+                      "change the background to a forest",
+                      "add blue glowing eyes",
+                    ].map((example) => (
+                      <button
+                        key={example}
+                        type="button"
+                        className="rounded-full border border-border/70 px-2 py-1 hover:bg-muted/60 hover:text-foreground"
+                        onClick={() => setEditInstruction(example)}
+                        disabled={isApplyingEdit}
+                      >
+                        {example}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex justify-end gap-1.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={isApplyingEdit}
+                      onClick={closeEditor}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={isApplyingEdit || editInstruction.trim().length === 0}
+                      onClick={() => void applyEdit(image)}
+                    >
+                      {isApplyingEdit ? "Applying…" : "Apply edit"}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const assistantImages = (row.message.attachments ?? []).filter(
+    (attachment): attachment is ChatImageAttachment => attachment.type === "image",
+  );
+  const messageText =
+    row.message.text ||
+    (row.message.streaming || assistantImages.length > 0 ? "" : "(empty response)");
   const ttsSettings = useEnvironmentSettings(ctx.activeThreadEnvironmentId, (settings) => ({
     enabled: settings.textToSpeechEnabled,
     autoRead: settings.textToSpeechAutoRead,
@@ -1187,7 +1670,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
 
   useEffect(() => {
     if (!ttsSettings.enabled) return;
-    if (shouldAutoReadAssistantMessage(String(row.message.id), Boolean(row.message.streaming))) {
+    if (shouldAutoReadAssistantMessage(String(row.message.id), row.showAssistantMeta)) {
       void playTextToSpeech(messageText, String(row.message.id)).catch((error) => {
         console.error("[TTS] auto-read failed", error);
       });
@@ -1195,7 +1678,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   }, [
     messageText,
     row.message.id,
-    row.message.streaming,
+    row.showAssistantMeta,
     ttsSettings.autoRead,
     ttsSettings.enabled,
   ]);
@@ -1209,15 +1692,18 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         )}
         data-tts-active={isActiveTtsMessage || undefined}
       >
-        <ChatMarkdown
-          text={messageText}
-          cwd={ctx.markdownCwd}
-          workspaceRoot={ctx.workspaceRoot}
-          threadRef={ctx.threadRef ?? undefined}
-          isStreaming={Boolean(row.message.streaming)}
-          lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
-          skills={ctx.skills}
-        />
+        {assistantImages.length > 0 ? <AssistantImageGallery images={assistantImages} /> : null}
+        {messageText.length > 0 ? (
+          <ChatMarkdown
+            text={messageText}
+            cwd={ctx.markdownCwd}
+            workspaceRoot={ctx.workspaceRoot}
+            threadRef={ctx.threadRef ?? undefined}
+            isStreaming={Boolean(row.message.streaming)}
+            lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
+            skills={ctx.skills}
+          />
+        ) : null}
         <AssistantChangedFilesSection
           turnSummary={row.assistantTurnDiffSummary}
           routeThreadKey={ctx.routeThreadKey}
@@ -1225,7 +1711,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           onOpenTurnDiff={ctx.onOpenTurnDiff}
         />
         {row.showAssistantMeta ? (
-          <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-100 transition-opacity duration-200 md:opacity-0 md:focus-within:opacity-100 md:group-hover/assistant:opacity-100">
+          <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-100 transition-opacity duration-200 md:opacity-0 md:focus-within:opacity-100 md:group-hover/assistant:opacity-100 [@media(hover:none)]:opacity-100">
             <AssistantCopyButton row={row} />
             {ttsSettings.enabled && !row.message.streaming ? (
               <div className="flex items-center gap-0.5">
@@ -1564,7 +2050,33 @@ function LiveActivityRow({
 }
 
 function ThinkingActivityRow() {
-  return <LiveActivityRow label="Thinking" />;
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="w-fit max-w-full">
+      <button
+        type="button"
+        className="group/thinking flex max-w-full cursor-pointer items-center rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <LiveActivityRow label="Thinking" />
+        <ChevronDownIcon
+          className={cn(
+            "ml-1 size-3 shrink-0 text-icon-muted opacity-60 transition-transform duration-150",
+            expanded && "rotate-180",
+          )}
+          aria-hidden
+        />
+      </button>
+      {expanded ? (
+        <div className="mt-1 ms-1 max-w-xl border-s border-border/45 ps-3 text-xs leading-relaxed text-secondary-label">
+          No provider reasoning summary is available for this moment. T3 shows provider-exposed
+          summaries when the active model supplies them; tool and plan progress remain visible in
+          the work log. Hidden chain-of-thought is not exposed.
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function LiveActivityContent({
@@ -2330,12 +2842,74 @@ function workToneIcon(tone: TimelineWorkEntry["tone"]): {
   };
 }
 
+function isRawJsonBlob(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+}
+
+interface StructuredFileToolPayload {
+  readonly path: string;
+  readonly type?: string;
+  readonly content?: string;
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&lt;/giu, "<")
+    .replace(/&gt;/giu, ">")
+    .replace(/&quot;/giu, '"')
+    .replace(/&apos;/giu, "'")
+    .replace(/&amp;/giu, "&");
+}
+
+function extractXmlTag(value: string, tag: string): string | undefined {
+  const match = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "iu").exec(value);
+  const text = match?.[1]?.trim();
+  return text ? decodeXmlText(text) : undefined;
+}
+
+function parseStructuredFileToolPayload(value: string): StructuredFileToolPayload | null {
+  const path = extractXmlTag(value, "path");
+  if (!path) return null;
+  const type = extractXmlTag(value, "type");
+  const content = extractXmlTag(value, "content");
+  return {
+    path,
+    ...(type !== undefined ? { type } : {}),
+    ...(content !== undefined ? { content } : {}),
+  };
+}
+
+function structuredFileToolAction(toolTitle: string | undefined): string {
+  const title = normalizeCompactToolLabel(toolTitle ?? "").toLowerCase();
+  if (title.includes("read")) return "Read";
+  if (title.includes("edit") || title.includes("replace")) return "Edited";
+  if (title.includes("write") || title.includes("create")) return "Wrote";
+  return "File";
+}
+
 function workEntryPreview(
-  workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles">,
+  workEntry: Pick<TimelineWorkEntry, "detail" | "command" | "changedFiles" | "toolTitle">,
   workspaceRoot: string | undefined,
 ) {
   if (workEntry.command) return workEntry.command;
-  if (workEntry.detail) return workEntry.detail;
+  if (workEntry.detail) {
+    const structuredFile = parseStructuredFileToolPayload(workEntry.detail);
+    if (structuredFile) {
+      const normalizedPath = structuredFile.path.replace(/\\/gu, "/");
+      const normalizedWorkspaceRoot = workspaceRoot?.replace(/\\/gu, "/").replace(/\/+$/u, "");
+      const relativePath =
+        normalizedWorkspaceRoot &&
+        normalizedPath.toLowerCase().startsWith(`${normalizedWorkspaceRoot.toLowerCase()}/`)
+          ? normalizedPath.slice(normalizedWorkspaceRoot.length + 1)
+          : formatWorkspaceRelativePath(normalizedPath, normalizedWorkspaceRoot);
+      return `${structuredFileToolAction(workEntry.toolTitle)} ${relativePath}`;
+    }
+    if (!isRawJsonBlob(workEntry.detail)) return workEntry.detail;
+  }
   if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
   const [firstPath] = workEntry.changedFiles ?? [];
   if (!firstPath) return null;
@@ -2541,6 +3115,63 @@ function liveWorkEntryLabel(
   return workEntryPreview(workEntry, workspaceRoot) ?? toolWorkEntryHeading(workEntry);
 }
 
+function formatToolCallContent(rawText: string): string {
+  const trimmed = rawText.trim();
+  if (!trimmed) return "";
+
+  const structuredFile = parseStructuredFileToolPayload(trimmed);
+  if (structuredFile) {
+    return [
+      `Path\n${structuredFile.path}`,
+      structuredFile.type ? `Type\n${structuredFile.type}` : null,
+      structuredFile.content ? `Content\n${structuredFile.content}` : null,
+    ]
+      .filter((block): block is string => block !== null)
+      .join("\n\n");
+  }
+
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === "object" && parsed !== null) {
+        const cleanObj = (obj: unknown): unknown => {
+          if (typeof obj === "string") {
+            const s = obj.trim();
+            if ((s.startsWith("{") && s.endsWith("}")) || (s.startsWith("[") && s.endsWith("]"))) {
+              try {
+                return cleanObj(JSON.parse(s));
+              } catch {
+                return obj.replace(/\r\n/g, "\n");
+              }
+            }
+            return obj.replace(/\r\n/g, "\n");
+          }
+          if (Array.isArray(obj)) {
+            return obj.map(cleanObj);
+          }
+          if (typeof obj === "object" && obj !== null) {
+            const res: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+              res[k] = cleanObj(v);
+            }
+            return res;
+          }
+          return obj;
+        };
+        return JSON.stringify(cleanObj(parsed), null, 2);
+      }
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return trimmed.replace(/\r\n/g, "\n");
+    }
+  }
+
+  return trimmed.replace(/\r\n/g, "\n");
+}
+
 function buildToolCallExpandedBody(
   workEntry: TimelineWorkEntry,
   workspaceRoot: string | undefined,
@@ -2559,7 +3190,7 @@ function buildToolCallExpandedBody(
     const detail =
       workEntry.itemType === "collab_agent_tool_call" || workEntry.taskId
         ? normalizeFriendlyAgentTaskResult(workEntry.detail).cleanedMarkdown
-        : workEntry.detail.trim();
+        : formatToolCallContent(workEntry.detail);
     if (detail) blocks.push(detail);
   }
   const changedFiles = workEntry.changedFiles ?? [];
@@ -2612,10 +3243,17 @@ function capitalizePhrase(value: string): string {
 }
 
 function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
-  if (!workEntry.toolTitle) {
-    return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
+  if (workEntry.toolTitle) {
+    return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
   }
-  return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
+  if (workEntry.itemType === "mcp_tool_call" && workEntry.toolData !== undefined) {
+    const data = workEntry.toolData as Record<string, unknown>;
+    const name = data.toolName ?? data.name ?? data.tool;
+    if (typeof name === "string" && name.length > 0) {
+      return capitalizePhrase(name);
+    }
+  }
+  return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
 }
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
@@ -2749,8 +3387,10 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
       : null;
   const entryIconName =
     showWarningIndicator || showFailedIndicator ? "x" : workEntryIconName(workEntry);
-  const displayText =
-    friendlyAgentResult?.hadInternalMarkup && friendlyAgentResult.completed
+  const isReasoningSummary = workEntry.sourceActivityKind === "reasoning.summary";
+  const displayText = isReasoningSummary
+    ? "Thinking"
+    : friendlyAgentResult?.hadInternalMarkup && friendlyAgentResult.completed
       ? `✓ Completed · ${
           workEntry.toolTitle && normalizeCompactToolLabel(workEntry.toolTitle) !== "task"
             ? capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle))
@@ -2849,7 +3489,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
           onClick={stopRowToggle}
           onPointerDown={stopRowToggle}
         >
-          {friendlyAgentResult?.hadInternalMarkup ? (
+          {friendlyAgentResult?.hadInternalMarkup || isReasoningSummary ? (
             <div className="max-h-64 overflow-auto text-sm text-secondary-label">
               <ChatMarkdown
                 text={expandedBody}

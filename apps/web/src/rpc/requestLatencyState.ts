@@ -33,6 +33,10 @@ const untrackedRpcAckMethods = new Set<string>([
   // This is an automatic, best-effort background scan. It has its own server
   // time budget and should never surface internal RPC diagnostics over the UI.
   WS_METHODS.vcsDiscoverRepositories,
+  // Image generation now has first-class thread/sidebar/composer progress UI.
+  // The generic slow-RPC toast is redundant and makes a healthy long render
+  // look like a transport problem.
+  WS_METHODS.localImageGenerate,
 ]);
 const longRunningRpcAckMethods = new Set<string>([
   WS_METHODS.serverUpdateProvider,

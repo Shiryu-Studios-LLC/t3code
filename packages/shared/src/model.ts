@@ -17,11 +17,13 @@ export interface SelectableModelOption {
   name: string;
 }
 
-export function createModelCapabilities(input: {
-  optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
-}): ModelCapabilities {
+export function createModelCapabilities(input: ModelCapabilities): ModelCapabilities {
   return {
-    optionDescriptors: input.optionDescriptors.map(cloneDescriptor),
+    ...input,
+    ...(input.tags ? { tags: [...input.tags] } : {}),
+    ...(input.optionDescriptors
+      ? { optionDescriptors: input.optionDescriptors.map(cloneDescriptor) }
+      : {}),
   };
 }
 

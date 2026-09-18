@@ -64,7 +64,8 @@ import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistry
  *   1. Copy all explicit `settings.providerInstances` entries verbatim.
  *   2. For each built-in driver whose `defaultInstanceIdForDriver(id)` key
  *      is *not* already in the explicit map, synthesize an entry from the
- *      matching legacy `settings.providers.<kind>` blob.
+ *      matching legacy `settings.providers.<kind>` blob when one exists,
+ *      otherwise from the driver's own default config.
  *
  * The returned map is the input the registry consumes; pure & exported
  * separately so the hydration logic can be exercised by unit tests
@@ -83,20 +84,16 @@ export const deriveProviderInstanceConfigMap = (
       continue;
     }
 
-    // Only built-in drivers have a legacy mirror; the registry's
-    // `providers` struct is keyed on the same literal slug as
-    // `driverKind`. Access is dynamic (the driver kind is a branded string),
-    // but it's constrained to `keyof settings.providers` by the union of
-    // built-in driver kinds.
+    // Older drivers still have a legacy mirror in `settings.providers`.
+    // Newer built-ins do not, so falling back to `defaultConfig()` is what
+    // makes registration in BUILT_IN_DRIVERS sufficient to expose a default
+    // instance on a fresh install.
     const legacyKey = driver.driverKind as keyof ServerSettings["providers"];
     const legacyConfig = settings.providers[legacyKey];
-    if (legacyConfig === undefined) {
-      continue;
-    }
 
     merged[instanceId] = {
       driver: driver.driverKind,
-      config: legacyConfig,
+      config: legacyConfig ?? driver.defaultConfig(),
     };
   }
 

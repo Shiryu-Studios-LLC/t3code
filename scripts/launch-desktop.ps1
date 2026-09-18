@@ -84,6 +84,17 @@ function Get-NodePath {
     throw "Node.js is not installed or is not available on PATH."
 }
 
+function Get-FileSha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Import-ProviderEnvironmentVariables {
     foreach ($name in @(
         "GEMINI_API_KEY", "GOOGLE_API_KEY",
@@ -145,7 +156,7 @@ function Get-DesktopFingerprint {
     foreach ($relativePath in ($untrackedPaths | Sort-Object)) {
         $candidate = Join-Path $root $relativePath
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            $contentHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+            $contentHash = Get-FileSha256 $candidate
             $lines += "untracked|$($relativePath.ToLowerInvariant())|$contentHash"
         }
     }
@@ -251,9 +262,14 @@ try {
     }
 
     # Clean up any stale electron processes from this workspace before launching
+    if (Test-Path -LiteralPath "$root/.t3-launcher/kill-stale.cjs" -PathType Leaf) {
+        & $node "$root/.t3-launcher/kill-stale.cjs" | Out-Null
+    }
     Get-Process -Name electron -ErrorAction SilentlyContinue | Where-Object {
-        $_.Path -like "$root*"
-    } | Stop-Process -Force -ErrorAction SilentlyContinue
+        $null -ne $_.Path -and $_.Path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object {
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
     Start-Sleep -Milliseconds 500
 
     Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
@@ -262,16 +278,21 @@ try {
     $launchProcess = Start-Process -FilePath $node -ArgumentList $desktopLauncherPath `
         -WorkingDirectory $desktopDirectory -PassThru
 
-    $deadline = (Get-Date).AddSeconds(30)
+    # A cold Windows start after a full rebuild can spend well over 30 seconds
+    # starting the bundled server before Electron creates its renderer.
+    $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline) {
         if (Test-T3StudioWindow) { exit 0 }
-        if ($launchProcess.HasExited) {
+        $electronRunning = $null -ne (Get-Process -Name electron -ErrorAction SilentlyContinue | Where-Object {
+            $_.Path -like "$root*"
+        } | Select-Object -First 1)
+        if ($launchProcess.HasExited -and -not $electronRunning) {
             throw "T3 Studio stopped before its window opened.$(Get-LaunchFailureDetails)"
         }
         Start-Sleep -Milliseconds 500
     }
 
-    throw "T3 Studio is still running but did not create a visible window within 30 seconds.$(Get-LaunchFailureDetails)"
+    throw "T3 Studio is still running but did not create a visible window within 90 seconds.$(Get-LaunchFailureDetails)"
 } catch {
     Show-LauncherError $_.Exception.Message
     exit 1

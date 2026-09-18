@@ -134,11 +134,17 @@ export function makeManualOnlyProviderMaintenanceCapabilities(input: {
 
 function makeNpmGlobalProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
+  prefix?: string | null,
 ): ProviderMaintenanceCapabilities {
   return makeProviderMaintenanceCapabilities({
     provider: definition.provider,
     packageName: definition.npmPackageName,
     updateExecutable: "npm",
+    // Preserve the prefix that owns the currently-resolved CLI. Desktop Linux
+    // installs are intentionally user-local (usually ~/.local); falling back
+    // to npm's process-wide default can silently switch the target to /usr and
+    // turn a valid one-click update into EACCES.
+    //
     // npm 12 blocks install scripts by default (empty allow-scripts allowlist)
     // and still exits 0, so a package whose postinstall finishes the install
     // (claude copies its native binary over a placeholder stub) is left broken
@@ -147,6 +153,7 @@ function makeNpmGlobalProviderMaintenanceCapabilities(
     updateArgs: [
       "install",
       "-g",
+      ...(prefix ? ["--prefix", prefix] : []),
       `--allow-scripts=${definition.npmPackageName}`,
       `${definition.npmPackageName}@latest`,
     ],
@@ -211,6 +218,7 @@ function makeHomebrewProviderMaintenanceCapabilities(
 
 function makeNativeProviderMaintenanceCapabilities(
   definition: PackageManagedProviderMaintenanceDefinition,
+  resolvedExecutable?: string | null,
 ): ProviderMaintenanceCapabilities | null {
   if (!definition.nativeUpdate) {
     return null;
@@ -219,7 +227,7 @@ function makeNativeProviderMaintenanceCapabilities(
   const capabilities = makeProviderMaintenanceCapabilities({
     provider: definition.provider,
     packageName: definition.npmPackageName,
-    updateExecutable: definition.nativeUpdate.executable,
+    updateExecutable: resolvedExecutable ?? definition.nativeUpdate.executable,
     updateArgs: definition.nativeUpdate.args,
     updateLockKey: definition.nativeUpdate.lockKey,
   });
@@ -264,6 +272,29 @@ function isNpmGlobalCommandPath(commandPath: string): boolean {
   );
 }
 
+function inferNpmGlobalPrefix(commandPath: string): string | null {
+  const normalized = normalizeCommandPath(commandPath);
+  const libNodeModulesMarker = "/lib/node_modules/";
+  const libNodeModulesIndex = normalized.indexOf(libNodeModulesMarker);
+  if (libNodeModulesIndex > 0) {
+    return commandPath.slice(0, libNodeModulesIndex);
+  }
+
+  // Windows npm global installs typically resolve inside
+  // .../AppData/Roaming/npm/node_modules. Keep the trailing npm directory as
+  // the prefix. Do not infer a prefix from arbitrary project node_modules.
+  const nodeModulesMarker = "/node_modules/";
+  const nodeModulesIndex = normalized.indexOf(nodeModulesMarker);
+  if (nodeModulesIndex > 0) {
+    const candidate = commandPath.slice(0, nodeModulesIndex);
+    if (normalizeCommandPath(candidate).endsWith("/npm")) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 function isHomebrewCommandPath(commandPath: string): boolean {
   const normalized = normalizeCommandPath(commandPath);
   return (
@@ -291,18 +322,42 @@ export function resolvePackageManagedProviderMaintenance(
     options?.resolvedCommandPath ?? (hasPathSeparator(binaryPath) ? binaryPath : null);
 
   if (resolvedCommandPath) {
-    const commandPaths = [
-      resolvedCommandPath,
-      ...(options?.realCommandPath ? [options.realCommandPath] : []),
-    ];
+    const realCommandPath = options?.realCommandPath ?? null;
+    const commandPaths = [resolvedCommandPath, ...(realCommandPath ? [realCommandPath] : [])];
+
+    // Classify the real target before the user-facing shim/symlink. Several
+    // installers share ~/.local/bin, so the shim alone is ambiguous. For
+    // example an npm-installed Claude executable is ~/.local/bin/claude but
+    // resolves into ~/.local/lib/node_modules; treating that as Anthropic's
+    // native installer selects the wrong updater.
+    if (realCommandPath && realCommandPath !== resolvedCommandPath) {
+      if (isVitePlusGlobalCommandPath(realCommandPath)) {
+        return makeVitePlusGlobalProviderMaintenanceCapabilities(definition);
+      }
+      if (isBunGlobalCommandPath(realCommandPath)) {
+        return makeBunGlobalProviderMaintenanceCapabilities(definition);
+      }
+      if (isPnpmGlobalCommandPath(realCommandPath)) {
+        return makePnpmGlobalProviderMaintenanceCapabilities(definition);
+      }
+      if (isNpmGlobalCommandPath(realCommandPath)) {
+        return makeNpmGlobalProviderMaintenanceCapabilities(
+          definition,
+          inferNpmGlobalPrefix(realCommandPath),
+        );
+      }
+      if (isHomebrewCommandPath(realCommandPath)) {
+        return makeHomebrewProviderMaintenanceCapabilities(definition);
+      }
+    }
 
     const nativeUpdate = definition.nativeUpdate;
-    if (
-      nativeUpdate &&
-      commandPaths.some((commandPath) => nativeUpdate.isCommandPath(commandPath))
-    ) {
+    const nativeCommandPath = nativeUpdate
+      ? commandPaths.find((commandPath) => nativeUpdate.isCommandPath(commandPath))
+      : undefined;
+    if (nativeCommandPath) {
       return (
-        makeNativeProviderMaintenanceCapabilities(definition) ??
+        makeNativeProviderMaintenanceCapabilities(definition, nativeCommandPath) ??
         makeNpmGlobalProviderMaintenanceCapabilities(definition)
       );
     }
@@ -315,8 +370,12 @@ export function resolvePackageManagedProviderMaintenance(
     if (commandPaths.some(isPnpmGlobalCommandPath)) {
       return makePnpmGlobalProviderMaintenanceCapabilities(definition);
     }
-    if (commandPaths.some(isNpmGlobalCommandPath)) {
-      return makeNpmGlobalProviderMaintenanceCapabilities(definition);
+    const npmCommandPath = commandPaths.find(isNpmGlobalCommandPath);
+    if (npmCommandPath) {
+      return makeNpmGlobalProviderMaintenanceCapabilities(
+        definition,
+        inferNpmGlobalPrefix(npmCommandPath),
+      );
     }
     if (commandPaths.some(isHomebrewCommandPath)) {
       return makeHomebrewProviderMaintenanceCapabilities(definition);

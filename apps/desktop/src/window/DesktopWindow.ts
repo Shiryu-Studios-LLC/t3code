@@ -283,10 +283,12 @@ export const make = Effect.gen(function* () {
   // The transient "Connecting to WSL" splash window, tracked separately so it
   // is never mistaken for the real main window.
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+  const rendererReadyWindows = new WeakSet<Electron.BrowserWindow>();
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
+  const startHidden = process.argv.includes("--hidden");
   let explicitQuitRequested = false;
   let tray: Electron.Tray | null = null;
 
@@ -671,6 +673,7 @@ export const make = Effect.gen(function* () {
       ) {
         return;
       }
+      rendererReadyWindows.add(window);
       clearDevelopmentLoadRetry();
       developmentLoadRetryIndex = 0;
       window.setTitle(environment.displayName);
@@ -751,6 +754,10 @@ export const make = Effect.gen(function* () {
       }
       // Reveal the real window, then close the connecting splash (if any) so the
       // two don't overlap and there's no blank gap between them.
+      if (startHidden && tray !== null) {
+        void runPromise(dismissConnectingSplash);
+        return;
+      }
       if (persistedSettings.mainWindowMaximized) {
         window.maximize();
       }
@@ -837,6 +844,7 @@ export const make = Effect.gen(function* () {
   }).pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
 
   const showConnectingSplash = Effect.gen(function* () {
+    if (startHidden && tray !== null) return;
     // Only when nothing is shown yet: no real window, no existing splash.
     const existingSplash = yield* Ref.get(splashWindowRef);
     if (Option.isSome(existingSplash)) return;
@@ -910,8 +918,20 @@ export const make = Effect.gen(function* () {
     createMainIfBackendReady,
     showConnectingSplash,
     handleBackendReady: Effect.fn("desktop.window.handleBackendReady")(function* (httpBaseUrl) {
+      const existingWindow = yield* currentMainWindow;
       yield* Ref.set(backendReadyRef, true);
       yield* logWindowInfo("backend ready", { source: "http", url: httpBaseUrl.href });
+      if (Option.isSome(existingWindow) && !rendererReadyWindows.has(existingWindow.value)) {
+        // In packaged builds the t3code:// renderer is proxied through the local
+        // backend. The main window can be created while that backend is still
+        // cold-booting, leaving Chromium on a failed custom-protocol load. Once
+        // readiness is confirmed, explicitly load the application again instead
+        // of leaving the already-created window stranded on a blank page.
+        void existingWindow.value
+          .loadURL(getDesktopUrl(environment.isDevelopment))
+          .catch(() => undefined);
+        return;
+      }
       yield* createMainIfBackendReady;
     }),
     handleBackendNotReady: Ref.set(backendReadyRef, false).pipe(

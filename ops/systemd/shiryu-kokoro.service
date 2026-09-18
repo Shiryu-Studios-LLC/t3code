@@ -1,0 +1,14 @@
+[Unit]
+Description=Shiryu Studios shared Kokoro text-to-speech service
+After=network-online.target pipewire.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/uv run --quiet --python 3.12 --with kokoro-onnx==0.6.1 --with onnxruntime-gpu>=1.20,<2 /mnt/Development/ShiryuGen/apps/desktop/prod-resources/kokoro/kokoro_tts.py --cache-dir %h/.cache/t3-studio/kokoro --server-port 37831
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { ThreadEnvMode } from "./environment.ts";
+import { LocalImageModel } from "./imageGeneration.ts";
 import {
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
@@ -30,9 +31,9 @@ export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"])
 export type TimestampFormat = typeof TimestampFormat.Type;
 export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 
-export const TextToSpeechProvider = Schema.Literals(["system", "openai"]);
+export const TextToSpeechProvider = Schema.Literals(["system", "kokoro", "omniroute", "openai"]);
 export type TextToSpeechProvider = typeof TextToSpeechProvider.Type;
-export const DEFAULT_TEXT_TO_SPEECH_PROVIDER: TextToSpeechProvider = "system";
+export const DEFAULT_TEXT_TO_SPEECH_PROVIDER: TextToSpeechProvider = "omniroute";
 export const MIN_TEXT_TO_SPEECH_RATE = 0.5;
 export const MAX_TEXT_TO_SPEECH_RATE = 2;
 export const TextToSpeechRate = Schema.Number.check(
@@ -448,11 +449,11 @@ export const CursorSettings = makeProviderSettingsSchema(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
-    binaryPath: makeBinaryPathSetting("cursor-agent").pipe(
+    binaryPath: makeBinaryPathSetting("agent").pipe(
       Schema.annotateKey({
         title: "Binary path",
-        description: "Path to the Cursor agent binary.",
-        providerSettingsForm: { placeholder: "cursor-agent", clearWhenEmpty: "omit" },
+        description: "Path to the Cursor Agent CLI binary.",
+        providerSettingsForm: { placeholder: "agent", clearWhenEmpty: "omit" },
       }),
     ),
     apiEndpoint: TrimmedString.pipe(
@@ -479,10 +480,8 @@ export type CursorSettings = typeof CursorSettings.Type;
 
 export const GrokSettings = makeProviderSettingsSchema(
   {
-    // Off by default (like Cursor and OpenCode): the binding is not yet
-    // stable enough to probe on every install. Users opt in from Settings.
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     binaryPath: makeBinaryPathSetting("grok").pipe(
@@ -505,10 +504,8 @@ export type GrokSettings = typeof GrokSettings.Type;
 
 export const OpenCodeSettings = makeProviderSettingsSchema(
   {
-    // Off by default (like Cursor and Grok): the binding is not yet stable
-    // enough to probe on every install. Users opt in from Settings.
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     binaryPath: makeBinaryPathSetting("opencode").pipe(
@@ -611,7 +608,7 @@ export type GeminiSettings = typeof GeminiSettings.Type;
 export const NvidiaSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     apiKey: TrimmedString.pipe(
@@ -660,6 +657,102 @@ export const NvidiaSettings = makeProviderSettingsSchema(
   { order: ["apiKey", "apiEndpoint", "binaryPath", "launchArgs"] },
 );
 export type NvidiaSettings = typeof NvidiaSettings.Type;
+
+export const OllamaSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    endpoint: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("http://127.0.0.1:11434")),
+      Schema.annotateKey({
+        title: "Endpoint",
+        description: "Local or remote Ollama server URL. T3 uses Ollama's local HTTP API directly.",
+        providerSettingsForm: {
+          placeholder: "http://127.0.0.1:11434",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    binaryPath: makeBinaryPathSetting("ollama").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Ollama executable used when T3 manages the default local server.",
+        providerSettingsForm: {
+          placeholder: "ollama",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  { order: ["endpoint", "binaryPath"] },
+);
+export type OllamaSettings = typeof OllamaSettings.Type;
+
+export const OmniRouteSettings = makeProviderSettingsSchema(
+  {
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    endpoint: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("http://127.0.0.1:20128")),
+      Schema.annotateKey({
+        title: "Endpoint",
+        description:
+          "OmniRoute dashboard/API base URL. ShiryuGen uses its OpenAI-compatible /v1 endpoint.",
+        providerSettingsForm: {
+          placeholder: "http://127.0.0.1:20128",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    apiKey: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Endpoint key",
+        description:
+          "Legacy inline OmniRoute key. New ShiryuGen installs store OMNIROUTE_API_KEY as a sensitive provider environment variable instead.",
+        providerSettingsForm: { hidden: true },
+      }),
+    ),
+    freeOnly: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({
+        title: "Free routes only",
+        description:
+          "Default to OmniRoute's free-tier auto routes and hide paid catalog models from ShiryuGen.",
+        providerSettingsForm: {
+          control: "switch",
+          clearWhenEmpty: "persist",
+        },
+      }),
+    ),
+    ttsModel: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("qwen3-local/qwen3-tts")),
+      Schema.annotateKey({
+        title: "Text-to-speech route/model",
+        description:
+          "OmniRoute speech model or speech combo used by the shared text-to-speech client. The default Shiryu Kokoro route is local/free and falls back to gTTS if the shared voice service is unavailable.",
+        providerSettingsForm: {
+          placeholder: "qwen3-local/qwen3-tts",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  { order: ["endpoint", "apiKey", "freeOnly", "ttsModel"] },
+);
+export type OmniRouteSettings = typeof OmniRouteSettings.Type;
 
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
@@ -741,6 +834,69 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
+export const LocalImageCheckpointSelection = Schema.Union([
+  Schema.Literal("auto"),
+  LocalImageModel,
+]);
+export type LocalImageCheckpointSelection = typeof LocalImageCheckpointSelection.Type;
+
+export const LocalImageGenerationEngine = Schema.Literals(["auto", "comfyui", "diffusers"]);
+export type LocalImageGenerationEngine = typeof LocalImageGenerationEngine.Type;
+
+export const MIN_LOCAL_IMAGE_MODEL_DOWNLOAD_CONCURRENCY = 1;
+export const MAX_LOCAL_IMAGE_MODEL_DOWNLOAD_CONCURRENCY = 6;
+export const LocalImageModelDownloadConcurrency = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_LOCAL_IMAGE_MODEL_DOWNLOAD_CONCURRENCY,
+    maximum: MAX_LOCAL_IMAGE_MODEL_DOWNLOAD_CONCURRENCY,
+  }),
+);
+export type LocalImageModelDownloadConcurrency = typeof LocalImageModelDownloadConcurrency.Type;
+export const DEFAULT_LOCAL_IMAGE_MODEL_DOWNLOAD_CONCURRENCY: LocalImageModelDownloadConcurrency = 3;
+
+export const LocalImageLoraConfig = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  path: TrimmedString,
+  weight: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0.8))),
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+});
+export type LocalImageLoraConfig = typeof LocalImageLoraConfig.Type;
+
+export const LocalImageGenerationSettings = Schema.Struct({
+  engine: LocalImageGenerationEngine.pipe(
+    Schema.withDecodingDefault(Effect.succeed("auto" as const)),
+  ),
+  comfyUiEndpoint: TrimmedString.pipe(
+    Schema.withDecodingDefault(Effect.succeed("http://127.0.0.1:8188")),
+  ),
+  comfyUiRootDirectory: TrimmedString.pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed("/mnt/Development/ShiryuStudiosLLC/ShiryuComfy/ComfyUI"),
+    ),
+  ),
+  autoStartComfyUi: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  modelDownloadConcurrency: LocalImageModelDownloadConcurrency.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_LOCAL_IMAGE_MODEL_DOWNLOAD_CONCURRENCY)),
+  ),
+  checkpoint: LocalImageCheckpointSelection.pipe(
+    Schema.withDecodingDefault(Effect.succeed("auto" as const)),
+  ),
+  customCheckpointPath: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  width: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(768))),
+  height: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(768))),
+  steps: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(24))),
+  guidance: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(5.5))),
+  editStrength: Schema.Number.pipe(Schema.withDecodingDefault(Effect.succeed(0.5))),
+  negativePrompt: Schema.String.pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed("blurry, low quality, malformed, distorted anatomy, text, watermark"),
+    ),
+  ),
+  loras: Schema.Array(LocalImageLoraConfig).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+}).pipe(Schema.withDecodingDefault(Effect.succeed({})));
+export type LocalImageGenerationSettings = typeof LocalImageGenerationSettings.Type;
+
 export const McpServerHeader = Schema.Struct({
   name: TrimmedNonEmptyString,
   value: Schema.String,
@@ -783,6 +939,22 @@ export const McpServerConfig = Schema.Struct({
 });
 export type McpServerConfig = typeof McpServerConfig.Type;
 
+/**
+ * T3-owned reusable workflow instructions. Unlike provider-native skills,
+ * these live in environment settings and are expanded by T3 before a turn is
+ * handed to whichever provider is active, so one skill works across Codex,
+ * Claude, Cursor, Grok, OpenCode, Gemini, and future adapters.
+ */
+export const T3SkillConfig = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  displayName: TrimmedNonEmptyString,
+  description: Schema.String,
+  instructions: TrimmedNonEmptyString,
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+});
+export type T3SkillConfig = typeof T3SkillConfig.Type;
+
 export const ServerSettings = Schema.Struct({
   // Legacy token-by-token assistant output. Deliberately a fresh key (was
   // `enableAssistantStreaming`): decoding drops the old key, so everyone,
@@ -792,19 +964,41 @@ export const ServerSettings = Schema.Struct({
   ),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /**
-   * Whether agents may drive the in-app preview browser. Turning this off
-   * withholds the MCP credential, so the `t3-code` server (and with it every
-   * `preview_*` tool) is never attached to a provider session, and the prompt
-   * text describing those tools is dropped along with them. The user's own
-   * browser panel is unaffected — this gates agent access only.
+   * Whether agents may drive the in-app preview browser. T3's authenticated
+   * MCP server is still attached when this is off so always-available T3
+   * capabilities such as plugin/skill inspection remain usable; the provider
+   * credential simply omits the `preview` capability, so `preview_*` calls are
+   * denied server-side. The user's own browser panel is unaffected.
    *
    * Server-authoritative rather than client-local: tool injection and prompt
    * construction both happen on the server, and the answer must not differ
    * between a desktop window and a phone attached to the same server.
    */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Route image-creation/edit prompts through T3's local generator before provider-native image tools. */
+  preferLocalImageGeneration: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Local SDXL checkpoint, LoRA, resolution, and quality defaults. */
+  imageGeneration: LocalImageGenerationSettings,
+  /**
+   * Purpose-built models that T3 may call without changing the provider/model
+   * selected for the conversation. The thread model remains the default brain;
+   * these selections are only used for the named specialist workload.
+   */
+  specialistModels: Schema.Struct({
+    imageVision: ModelSelection.pipe(
+      Schema.withDecodingDefault(
+        Effect.succeed({
+          instanceId: ProviderInstanceId.make("ollama"),
+          model: "qwen3-vl:4b-instruct",
+          options: [],
+        }),
+      ),
+    ),
+  }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   /** User-managed MCP servers exposed to every provider runtime that supports tools. */
   mcpServers: Schema.Array(McpServerConfig).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /** T3-owned cross-provider reusable workflow instructions. */
+  t3Skills: Schema.Array(T3SkillConfig).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   /**
    * Controls whether capable providers may fan one user turn out to native
    * child/subagents and then consolidate their results back into the lead
@@ -1025,7 +1219,32 @@ export const ServerSettingsPatch = Schema.Struct({
   enableLegacyTokenStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+  preferLocalImageGeneration: Schema.optionalKey(Schema.Boolean),
+  imageGeneration: Schema.optionalKey(
+    Schema.Struct({
+      engine: Schema.optionalKey(LocalImageGenerationEngine),
+      comfyUiEndpoint: Schema.optionalKey(TrimmedString),
+      comfyUiRootDirectory: Schema.optionalKey(TrimmedString),
+      autoStartComfyUi: Schema.optionalKey(Schema.Boolean),
+      modelDownloadConcurrency: Schema.optionalKey(LocalImageModelDownloadConcurrency),
+      checkpoint: Schema.optionalKey(LocalImageCheckpointSelection),
+      customCheckpointPath: Schema.optionalKey(TrimmedString),
+      width: Schema.optionalKey(Schema.Number),
+      height: Schema.optionalKey(Schema.Number),
+      steps: Schema.optionalKey(Schema.Number),
+      guidance: Schema.optionalKey(Schema.Number),
+      editStrength: Schema.optionalKey(Schema.Number),
+      negativePrompt: Schema.optionalKey(Schema.String),
+      loras: Schema.optionalKey(Schema.Array(LocalImageLoraConfig)),
+    }),
+  ),
+  specialistModels: Schema.optionalKey(
+    Schema.Struct({
+      imageVision: Schema.optionalKey(ModelSelectionPatch),
+    }),
+  ),
   mcpServers: Schema.optionalKey(Schema.Array(McpServerConfig)),
+  t3Skills: Schema.optionalKey(Schema.Array(T3SkillConfig)),
   agentTeamMode: Schema.optionalKey(AgentTeamMode),
   agentTeamMaxConcurrency: Schema.optionalKey(AgentTeamMaxConcurrency),
   backgroundActivity: Schema.optionalKey(

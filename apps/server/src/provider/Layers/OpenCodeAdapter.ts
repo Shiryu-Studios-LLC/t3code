@@ -1,5 +1,6 @@
 import {
   type AgentTeamMode,
+  type ChatImageAttachment,
   DEFAULT_AGENT_TEAM_MAX_CONCURRENCY,
   MAX_AGENT_TEAM_MAX_CONCURRENCY,
   MIN_AGENT_TEAM_MAX_CONCURRENCY,
@@ -8,6 +9,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ProviderSession,
   type ProviderSwarmLaunchAgentResolvedInput,
   type ProviderSwarmLaunchAgentResult,
@@ -20,6 +22,7 @@ import {
   type UserInputQuestion,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -31,10 +34,16 @@ import * as Semaphore from "effect/Semaphore";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
+import type {
+  FilePart,
+  OpencodeClient,
+  Part,
+  PermissionRequest,
+  QuestionRequest,
+} from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { createAttachmentId, resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { externalMcpServersForOpenCode } from "../../mcp/ExternalMcpProviderConfig.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -384,6 +393,7 @@ interface OpenCodeSessionContext {
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
   readonly completedAssistantPartIds: Set<string>;
+  readonly persistedImageAttachmentsByToolCallId: Map<string, ReadonlyArray<ChatImageAttachment>>;
   readonly childTaskBySessionId: Map<string, OpenCodeChildTaskBinding>;
   readonly childSessionIdByTaskId: Map<string, string>;
   readonly knownChildSessionIds: Set<string>;
@@ -393,6 +403,9 @@ interface OpenCodeSessionContext {
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
+  /** Last event observed from OpenCode for this session. Used to fail a turn
+   * that remains busy after the provider stops emitting any progress. */
+  lastProviderActivityAtMs: number;
   /**
    * One-shot guard flipped by `stopOpenCodeContext` / `emitUnexpectedExit`.
    * The session lifecycle is owned by `sessionScope`; this Ref exists only
@@ -700,6 +713,54 @@ function detailFromToolPart(part: Extract<Part, { type: "tool" }>): string | und
   }
 }
 
+function decodeOpenCodeImageDataUrl(file: FilePart): Uint8Array | undefined {
+  if (!file.mime.toLowerCase().startsWith("image/")) return undefined;
+  const match = /^data:([^;,]+);base64,(.+)$/s.exec(file.url);
+  if (!match || match[1]?.toLowerCase() !== file.mime.toLowerCase()) return undefined;
+  try {
+    const bytes = Buffer.from(match[2]!, "base64");
+    return bytes.byteLength > 0 ? new Uint8Array(bytes) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function generatedImageSavedPath(part: Extract<Part, { type: "tool" }>): string | undefined {
+  if (part.state.status !== "completed") return undefined;
+  const metadata = asUnknownRecord(part.state.metadata);
+  return nonEmptyString(metadata?.path ?? metadata?.outputPath ?? metadata?.savedPath);
+}
+
+function generatedImagePrompt(part: Extract<Part, { type: "tool" }>): string | undefined {
+  if (part.state.status !== "completed") return undefined;
+  const input = asUnknownRecord(part.state.input);
+  return nonEmptyString(input?.prompt);
+}
+
+function toolStateForActivity(
+  part: Extract<Part, { type: "tool" }>,
+  persistedImages: ReadonlyArray<ChatImageAttachment>,
+) {
+  if (part.state.status !== "completed" || !part.state.attachments?.length) return part.state;
+  let imageIndex = 0;
+  return {
+    ...part.state,
+    attachments: part.state.attachments.map((file) => {
+      if (!file.mime.toLowerCase().startsWith("image/")) return file;
+      const persisted = persistedImages[imageIndex++];
+      return persisted
+        ? {
+            ...file,
+            // Never persist multi-megabyte base64 image payloads in activity rows.
+            url: `t3-attachment://${persisted.id}`,
+          }
+        : file.url.startsWith("data:")
+          ? { ...file, url: "data:image/*;base64,[omitted]" }
+          : file;
+    }),
+  };
+}
+
 function toolStateCreatedAt(part: Extract<Part, { type: "tool" }>): string | undefined {
   switch (part.state.status) {
     case "running":
@@ -850,6 +911,47 @@ export function makeOpenCodeAdapter(
             : {}),
         })),
       );
+
+    const persistOpenCodeToolImageAttachments = Effect.fn(
+      "OpenCodeAdapter.persistToolImageAttachments",
+    )(function* (context: OpenCodeSessionContext, part: Extract<Part, { type: "tool" }>) {
+      const cached = context.persistedImageAttachmentsByToolCallId.get(part.callID);
+      if (cached) return cached;
+      if (part.state.status !== "completed" || !part.state.attachments?.length) {
+        return [] as ReadonlyArray<ChatImageAttachment>;
+      }
+
+      const savedPath = generatedImageSavedPath(part);
+      const generationPrompt = generatedImagePrompt(part);
+      const images: ChatImageAttachment[] = [];
+      for (const [index, file] of part.state.attachments.entries()) {
+        const bytes = decodeOpenCodeImageDataUrl(file);
+        if (!bytes || bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) continue;
+        const attachmentId = createAttachmentId(context.session.threadId);
+        if (!attachmentId) continue;
+        const attachment: ChatImageAttachment = {
+          type: "image",
+          id: attachmentId,
+          name: file.filename?.trim() || `generated-image-${index + 1}`,
+          mimeType: file.mime.toLowerCase(),
+          sizeBytes: bytes.byteLength,
+          source: "generated",
+          ...(savedPath ? { savedPath } : {}),
+          ...(generationPrompt ? { generationPrompt } : {}),
+          generationTool: part.tool,
+        };
+        const attachmentPath = resolveAttachmentPath({
+          attachmentsDir: serverConfig.attachmentsDir,
+          attachment,
+        });
+        if (!attachmentPath) continue;
+        yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true });
+        yield* fileSystem.writeFile(attachmentPath, bytes);
+        images.push(attachment);
+      }
+      context.persistedImageAttachmentsByToolCallId.set(part.callID, images);
+      return images as ReadonlyArray<ChatImageAttachment>;
+    });
 
     // Layer-level finalizer: when the adapter layer shuts down, stop every
     // session. Each session's `Scope.close` tears down its spawned OpenCode
@@ -1740,8 +1842,31 @@ export function makeOpenCodeAdapter(
           if (part.type === "tool") {
             yield* registerChildTaskBinding(context, part, turnId);
             const itemType = toToolLifecycleItemType(part.tool);
+            const imageAttachments =
+              part.state.status === "completed"
+                ? yield* persistOpenCodeToolImageAttachments(context, part).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("Failed to persist OpenCode generated image attachment", {
+                        tool: part.tool,
+                        callId: part.callID,
+                        cause: Cause.pretty(cause),
+                      }).pipe(Effect.as([] as ReadonlyArray<ChatImageAttachment>)),
+                    ),
+                  )
+                : [];
+            const isImageGeneration = itemType === "image_view";
             const title =
-              part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
+              isImageGeneration && part.state.status === "running"
+                ? "Generating image..."
+                : isImageGeneration &&
+                    part.state.status === "completed" &&
+                    imageAttachments.length > 0
+                  ? imageAttachments.length === 1
+                    ? "Image generated"
+                    : `${imageAttachments.length} images generated`
+                  : part.state.status === "running"
+                    ? (part.state.title ?? part.tool)
+                    : part.tool;
             const detail = detailFromToolPart(part);
             const payload = {
               itemType,
@@ -1752,9 +1877,10 @@ export function makeOpenCodeAdapter(
                   : { status: "inProgress" as const }),
               ...(title ? { title } : {}),
               ...(detail ? { detail } : {}),
+              ...(imageAttachments.length > 0 ? { attachments: imageAttachments } : {}),
               data: {
                 tool: part.tool,
-                state: part.state,
+                state: toolStateForActivity(part, imageAttachments),
               },
             };
             const runtimeEvent: ProviderRuntimeEvent = {
@@ -1989,7 +2115,18 @@ export function makeOpenCodeAdapter(
                 detail: openCodeRuntimeErrorDetail(cause),
                 cause,
               }),
-          ).pipe(Stream.runForEach((event) => handleSubscribedEvent(context, event))),
+          ).pipe(
+            Stream.runForEach((event) =>
+              Clock.currentTimeMillis.pipe(
+                Effect.tap((now) =>
+                  Effect.sync(() => {
+                    context.lastProviderActivityAtMs = now;
+                  }),
+                ),
+                Effect.andThen(handleSubscribedEvent(context, event)),
+              ),
+            ),
+          ),
       ).pipe(
         Effect.exit,
         Effect.flatMap((exit) =>
@@ -2071,23 +2208,57 @@ export function makeOpenCodeAdapter(
                   }),
                 ).pipe(
                   Effect.catchCause((cause) =>
-                    Effect.logWarning("Could not register T3 Code MCP session with OpenCode", {
-                      cause,
+                    Effect.gen(function* () {
+                      const message = `Failed to register T3 Code MCP session: ${cause instanceof Error ? cause.message : String(cause)}`;
+                      yield* Effect.logWarning(message, { cause });
+                      yield* emit({
+                        ...(yield* buildEventBase({
+                          threadId: input.threadId,
+                          createdAt: yield* nowIso,
+                        })),
+                        type: "runtime.warning",
+                        payload: {
+                          message,
+                          detail: {
+                            serverName: "t3-code",
+                            config: { type: "remote", url: mcpSession.endpoint },
+                          },
+                        },
+                      });
                     }),
                   ),
                 );
               }
+              const registerMcpServer = (
+                externalMcpServer: ReturnType<typeof externalMcpServersForOpenCode>[number],
+              ) =>
+                runOpenCodeSdk("mcp.add", () => client.mcp.add(externalMcpServer)).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.gen(function* () {
+                      const message = `Failed to register MCP server "${externalMcpServer.name}": ${cause instanceof Error ? cause.message : String(cause)}`;
+                      yield* Effect.logWarning(message, { cause });
+                      yield* emit({
+                        ...(yield* buildEventBase({
+                          threadId: input.threadId,
+                          createdAt: yield* nowIso,
+                        })),
+                        type: "runtime.warning",
+                        payload: {
+                          message,
+                          detail: {
+                            serverName: externalMcpServer.name,
+                            config: externalMcpServer.config,
+                          },
+                        },
+                      });
+                    }),
+                  ),
+                );
+
               if (!server.external) {
                 yield* Effect.forEach(
                   externalMcpServersForOpenCode(input.threadId),
-                  (externalMcpServer) =>
-                    runOpenCodeSdk("mcp.add", () => client.mcp.add(externalMcpServer)).pipe(
-                      Effect.catchCause((cause) =>
-                        Effect.logWarning("Could not register external MCP server with OpenCode", {
-                          cause,
-                        }),
-                      ),
-                    ),
+                  registerMcpServer,
                   { discard: true },
                 );
               } else {
@@ -2095,14 +2266,7 @@ export function makeOpenCodeAdapter(
                   externalMcpServersForOpenCode(input.threadId).filter(
                     (externalMcpServer) => externalMcpServer.config.type === "remote",
                   ),
-                  (externalMcpServer) =>
-                    runOpenCodeSdk("mcp.add", () => client.mcp.add(externalMcpServer)).pipe(
-                      Effect.catchCause((cause) =>
-                        Effect.logWarning("Could not register external MCP server with OpenCode", {
-                          cause,
-                        }),
-                      ),
-                    ),
+                  registerMcpServer,
                   { discard: true },
                 );
               }
@@ -2140,6 +2304,24 @@ export function makeOpenCodeAdapter(
                       sessionID: reusable.id,
                       permission: buildOpenCodePermissionRules(input.runtimeMode),
                     }),
+                  ).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.gen(function* () {
+                        const message = `Failed to apply permission rules for runtime mode "${input.runtimeMode}": ${cause instanceof Error ? cause.message : String(cause)}`;
+                        yield* Effect.logWarning(message, { cause });
+                        yield* emit({
+                          ...(yield* buildEventBase({
+                            threadId: input.threadId,
+                            createdAt: yield* nowIso,
+                          })),
+                          type: "runtime.warning",
+                          payload: {
+                            message,
+                            detail: { runtimeMode: input.runtimeMode, sessionId: reusable.id },
+                          },
+                        });
+                      }),
+                    ),
                   );
                   return { openCodeSession: reusable, created: false };
                 }
@@ -2167,6 +2349,24 @@ export function makeOpenCodeAdapter(
                       sessionID: forked.id,
                       permission: buildOpenCodePermissionRules(input.runtimeMode),
                     }),
+                  ).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.gen(function* () {
+                        const message = `Failed to apply permission rules for runtime mode "${input.runtimeMode}": ${cause instanceof Error ? cause.message : String(cause)}`;
+                        yield* Effect.logWarning(message, { cause });
+                        yield* emit({
+                          ...(yield* buildEventBase({
+                            threadId: input.threadId,
+                            createdAt: yield* nowIso,
+                          })),
+                          type: "runtime.warning",
+                          payload: {
+                            message,
+                            detail: { runtimeMode: input.runtimeMode, sessionId: forked.id },
+                          },
+                        });
+                      }),
+                    ),
                   );
                   return { openCodeSession: forked, created: true };
                 }
@@ -2181,6 +2381,26 @@ export function makeOpenCodeAdapter(
                     ...(input.title ? { title: input.title } : {}),
                     permission: buildOpenCodePermissionRules(input.runtimeMode),
                   }),
+                ).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.gen(function* () {
+                      const message = `Failed to create session with runtime mode "${input.runtimeMode}": ${cause instanceof Error ? cause.message : String(cause)}`;
+                      yield* Effect.logError(message, { cause });
+                      yield* emit({
+                        ...(yield* buildEventBase({
+                          threadId: input.threadId,
+                          createdAt: yield* nowIso,
+                        })),
+                        type: "runtime.error",
+                        payload: {
+                          message,
+                          class: "permission_error",
+                          detail: { runtimeMode: input.runtimeMode },
+                        },
+                      });
+                      return yield* Effect.fail(cause);
+                    }),
+                  ),
                 );
                 if (!createdSession.data) {
                   return yield* new OpenCodeRuntimeError({
@@ -2257,6 +2477,7 @@ export function makeOpenCodeAdapter(
           emittedTextByPartId: new Map(),
           messageRoleById: new Map(),
           completedAssistantPartIds: new Set(),
+          persistedImageAttachmentsByToolCallId: new Map(),
           childTaskBySessionId: new Map(),
           childSessionIdByTaskId: new Map(),
           knownChildSessionIds: new Set(),
@@ -2266,6 +2487,7 @@ export function makeOpenCodeAdapter(
           activeTurnId: undefined,
           activeAgent: undefined,
           activeVariant: undefined,
+          lastProviderActivityAtMs: yield* Clock.currentTimeMillis,
           stopped: yield* Ref.make(false),
           sessionScope: started.sessionScope,
         };
@@ -2468,6 +2690,46 @@ export function makeOpenCodeAdapter(
       },
     );
 
+    const startTurnInactivityWatchdog = Effect.fn("startTurnInactivityWatchdog")(function* (
+      context: OpenCodeSessionContext,
+      threadId: ThreadId,
+      turnId: TurnId,
+    ) {
+      const inactivityTimeoutMs = 10 * 60 * 1_000;
+      while (context.activeTurnId === turnId && !(yield* Ref.get(context.stopped))) {
+        yield* Effect.sleep("30 seconds");
+        if (context.activeTurnId !== turnId || (yield* Ref.get(context.stopped))) return;
+        const now = yield* Clock.currentTimeMillis;
+        if (now - context.lastProviderActivityAtMs < inactivityTimeoutMs) continue;
+
+        const reason =
+          "OpenCode stopped reporting progress for 10 minutes while the session remained busy. T3 aborted the stale turn so the chat does not stay stuck in Working forever.";
+        yield* runOpenCodeSdk("session.abort.inactivity-watchdog", () =>
+          context.client.session.abort({ sessionID: context.openCodeSessionId }),
+        ).pipe(Effect.ignore({ log: true }));
+        if (context.activeTurnId !== turnId) return;
+        context.activeTurnId = undefined;
+        context.activeAgent = undefined;
+        context.activeVariant = undefined;
+        yield* updateProviderSession(
+          context,
+          { status: "ready", lastError: reason },
+          { clearActiveTurnId: true },
+        );
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, turnId })),
+          type: "turn.completed",
+          payload: { state: "failed", errorMessage: reason },
+        });
+        yield* emit({
+          ...(yield* buildEventBase({ threadId, turnId })),
+          type: "runtime.warning",
+          payload: { message: reason },
+        });
+        return;
+      }
+    });
+
     const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
       const context = yield* ensureSessionContext(sessions, input.threadId);
       // A sendTurn while a turn is active is a steer: OpenCode queues the
@@ -2529,6 +2791,7 @@ export function makeOpenCodeAdapter(
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
       context.activeTurnId = turnId;
+      context.lastProviderActivityAtMs = yield* Clock.currentTimeMillis;
       context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
       context.activeVariant = variant;
       yield* updateProviderSession(
@@ -2550,6 +2813,12 @@ export function makeOpenCodeAdapter(
             ...(variant ? { effort: variant } : {}),
           },
         });
+      }
+
+      if (steeringTurnId === undefined) {
+        yield* startTurnInactivityWatchdog(context, input.threadId, turnId).pipe(
+          Effect.forkIn(context.sessionScope),
+        );
       }
 
       yield* runOpenCodeSdk("session.promptAsync", () =>

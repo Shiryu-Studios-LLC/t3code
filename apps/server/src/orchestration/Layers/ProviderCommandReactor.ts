@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  type MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -33,6 +34,8 @@ import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { buildPluginPromptContext } from "../../provider/PluginPromptContext.ts";
+import { expandT3SkillsInPrompt } from "../../provider/T3Skills.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -730,6 +733,7 @@ const make = Effect.gen(function* () {
 
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
+    readonly messageId: MessageId;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
@@ -742,6 +746,11 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
+    const sessionBeforeEnsure = yield* providerService
+      .listSessions()
+      .pipe(
+        Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
+      );
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       pendingTurnStart: true,
@@ -749,7 +758,28 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
+    const { t3Skills, mcpServers } = yield* serverSettingsService.getSettings;
+    const expandedSkillPrompt = expandT3SkillsInPrompt(input.messageText, t3Skills);
+    if (expandedSkillPrompt.activatedSkillNames.length > 0) {
+      yield* Effect.logInfo("expanded T3 skills for provider turn", {
+        threadId: input.threadId,
+        skills: expandedSkillPrompt.activatedSkillNames,
+      });
+    }
+    const pluginContext = buildPluginPromptContext(
+      input.messageText,
+      mcpServers,
+      expandedSkillPrompt.prompt,
+    );
+    if (pluginContext.activated) {
+      yield* Effect.logInfo("activated conditional plugin context for provider turn", {
+        threadId: input.threadId,
+        reason: pluginContext.reason,
+        matchedPlugins: pluginContext.matchedPluginNames,
+        requiredCapabilities: pluginContext.requiredCapabilities,
+      });
+    }
+    const normalizedInput = toNonEmptyProviderInput(pluginContext.prompt);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()
@@ -779,14 +809,25 @@ const make = Effect.gen(function* () {
           : requestedModelSelection
         : input.modelSelection;
 
-    const priorMessages = (thread.messages ?? []).filter((m) => m.text && m.text.trim().length > 0);
+    const priorMessages = (thread.messages ?? []).filter(
+      (message) =>
+        message.id !== input.messageId &&
+        (message.role === "user" || message.role === "assistant") &&
+        Boolean(message.text?.trim()),
+    );
+    const sessionWasCreatedOrRestarted =
+      activeSession !== undefined &&
+      (sessionBeforeEnsure === undefined ||
+        sessionBeforeEnsure.providerInstanceId !== activeSession.providerInstanceId ||
+        sessionBeforeEnsure.createdAt !== activeSession.createdAt);
+    const isDirectChatProvider =
+      activeSession?.provider === "gemini" || activeSession?.provider === "nvidia";
     let effectiveInput = normalizedInput;
     if (
       activeSession?.resumeCursor === undefined &&
       priorMessages.length > 0 &&
       normalizedInput &&
-      activeSession?.provider !== "gemini" &&
-      activeSession?.provider !== "nvidia"
+      (!isDirectChatProvider || sessionWasCreatedOrRestarted)
     ) {
       const formattedHistory = priorMessages
         .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text.trim()}`)
@@ -1178,6 +1219,7 @@ const make = Effect.gen(function* () {
 
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
+      messageId: message.id,
       messageText: message.text,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined

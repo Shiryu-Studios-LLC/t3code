@@ -186,6 +186,8 @@ function buildProps() {
     onOpenTurnDiff: () => {},
     revertTurnCountByUserMessageId: new Map(),
     onRevertUserMessage: () => {},
+    onEditUserMessage: async () => true,
+    editableUserMessageIds: new Set<MessageId>(),
     isRevertingCheckpoint: false,
     onImageExpand: () => {},
     activeThreadEnvironmentId: ACTIVE_THREAD_ENVIRONMENT_ID,
@@ -237,6 +239,165 @@ function buildAssistantTimelineEntry(text: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("renders a generated assistant image inline with image actions", () => {
+    const entry = buildAssistantTimelineEntry("");
+    const timelineEntry = {
+      ...entry,
+      message: {
+        ...entry.message,
+        attachments: [
+          {
+            type: "image" as const,
+            id: "generated-image-1",
+            name: "car.png",
+            mimeType: "image/png",
+            sizeBytes: 1024,
+            source: "generated" as const,
+            savedPath: "/home/test/generated_images/car.png",
+            generationPrompt: "Create me an image of a car",
+            generationTool: "generate-image-save",
+            generationDetails: {
+              checkpoint: "/models/novaAnimeXL_ilV190.safetensors",
+              profile: "nova-anime-illustrious",
+              baseModel: "Illustrious XL",
+              engine: "comfyui",
+              sampler: "euler_ancestral",
+              scheduler: "normal",
+              steps: 26,
+              guidance: 4.5,
+              seed: 101,
+              width: 768,
+              height: 1024,
+              positivePrompt: "1boy, black hair",
+              negativePrompt: "magic aura",
+              denoise: 1,
+              loras: [],
+            },
+            previewUrl: "data:image/png;base64,iVBORw0KGgo=",
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[timelineEntry]} />,
+    );
+
+    expect(markup).toContain('data-assistant-image-gallery="true"');
+    expect(markup).toContain('alt="car.png"');
+    expect(markup).toContain("Generation details");
+    expect(markup).toContain("nova-anime-illustrious");
+    expect(markup).toContain("euler_ancestral");
+    expect(markup).toContain("1boy, black hair");
+    expect(markup).toContain("magic aura");
+    expect(markup).toContain("h-[480px]");
+    expect(markup).toContain("object-contain");
+    expect(markup).toContain("Download");
+    expect(markup).toContain("Open folder");
+    expect(markup).toContain("Regenerate");
+    expect(markup).toContain("Add to Character");
+    expect(markup).toContain('aria-label="Add car.png to character kit"');
+    expect(markup).toContain("Edit");
+    expect(markup).toContain('aria-label="Edit car.png"');
+    const editButtonLabelIndex = markup.indexOf('aria-label="Edit car.png"');
+    const editButtonStart = markup.lastIndexOf("<button", editButtonLabelIndex);
+    const editButtonEnd = markup.indexOf(">", editButtonLabelIndex);
+    expect(markup.slice(editButtonStart, editButtonEnd)).not.toContain('disabled=""');
+    expect(markup).not.toContain("Image editing is coming next");
+    expect(markup).toContain("Saved to /home/test/generated_images/car.png");
+    expect(markup).not.toContain("(empty response)");
+  });
+
+  it("keeps the full generated-image toolbar on img2img edit results", () => {
+    const entry = buildAssistantTimelineEntry("Image generated locally.");
+    const timelineEntry = {
+      ...entry,
+      message: {
+        ...entry.message,
+        attachments: [
+          {
+            type: "image" as const,
+            id: "edited-image-1",
+            name: "edited-car.png",
+            mimeType: "image/png",
+            sizeBytes: 2048,
+            source: "generated" as const,
+            savedPath: "/home/test/generated_images/edited-car.png",
+            generationPrompt: "make the car red",
+            generationTool: "local-sdxl-img2img+qwen3-vl",
+            previewUrl: "data:image/png;base64,iVBORw0KGgo=",
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[timelineEntry]} />,
+    );
+
+    expect(markup).toContain("Download");
+    expect(markup).toContain("Open folder");
+    expect(markup).toContain("Regenerate");
+    expect(markup).toContain("Add to Character");
+    expect(markup).toContain('aria-label="Edit edited-car.png"');
+  });
+
+  it("keeps ordinary user file attachments rendering as file chips", () => {
+    const entry = buildUserTimelineEntry("Please review this.");
+    const timelineEntry = {
+      ...entry,
+      message: {
+        ...entry.message,
+        attachments: [
+          {
+            type: "file" as const,
+            id: "file-attachment-1",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            sizeBytes: 42,
+          },
+        ],
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[timelineEntry]} />,
+    );
+
+    expect(markup).toContain("notes.txt");
+    expect(markup).toContain("Please review this.");
+    expect(markup).not.toContain('data-assistant-image-gallery="true"');
+  });
+
+  it("renders multiple assistant images as one inline gallery", () => {
+    const entry = buildAssistantTimelineEntry("Here are two images.");
+    const images = ["car-one.png", "car-two.png"].map((name, index) => ({
+      type: "image" as const,
+      id: `generated-image-${index + 1}`,
+      name,
+      mimeType: "image/png",
+      sizeBytes: 1024,
+      source: "generated" as const,
+      savedPath: `/home/test/generated_images/${name}`,
+      generationPrompt: `Car ${index + 1}`,
+      generationTool: "generate-image-save",
+      previewUrl: `data:image/png;base64,image${index + 1}`,
+    }));
+    const timelineEntry = {
+      ...entry,
+      message: { ...entry.message, attachments: images },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[timelineEntry]} />,
+    );
+
+    expect(markup.match(/data-assistant-image-gallery=/g)).toHaveLength(1);
+    expect(markup).toContain('alt="car-one.png"');
+    expect(markup).toContain('alt="car-two.png"');
+    expect(markup).toContain("sm:grid-cols-2");
+  });
+
   it("renders a feedback command and its pending response as normal thread messages", () => {
     const submission = {
       id: MessageId.make("feedback-command"),
@@ -871,6 +1032,19 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("<element_context");
   });
 
+  it("shows an edit-and-regenerate action for editable sent user messages", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        editableUserMessageIds={new Set([MessageId.make("message-1")])}
+        timelineEntries={[buildUserTimelineEntry("please search my installed plugins")]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Edit message and regenerate response"');
+    expect(markup).toContain("[@media(hover:none)]:opacity-100");
+  });
+
   it("keeps the copy button for collapsed long user messages", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -932,6 +1106,46 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Changed 1 file");
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
+  });
+
+  it("renders XML-style file tool payloads as a concise file action", () => {
+    const turnId = TurnId.make("turn-file-tool");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        runningTurnId={turnId}
+        latestTurn={{
+          turnId,
+          state: "running",
+          startedAt: "2026-03-17T19:12:27.000Z",
+          completedAt: null,
+        }}
+        timelineEntries={[
+          {
+            id: "entry-file-tool",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-file-tool",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              turnId,
+              label: "read_file",
+              tone: "tool",
+              toolTitle: "Read file",
+              detail:
+                "<path>I:\\ShiryuAudio\\driver\\Check-DriverToolchain.ps1</path> <type>file</type> <content>1: $ErrorActionPreference = 'Stop'</content>",
+              toolLifecycleStatus: "inProgress",
+            },
+          },
+        ]}
+        workspaceRoot={"I:\\ShiryuAudio"}
+      />,
+    );
+
+    expect(markup).toContain("Read driver/Check-DriverToolchain.ps1");
+    expect(markup).not.toContain("&lt;path&gt;");
+    expect(markup).not.toContain("$ErrorActionPreference");
   });
 
   it("keeps mixed-success tool groups neutral", () => {
@@ -1169,7 +1383,46 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Working for");
     expect(markup).toContain("Thinking");
+    expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain("gap-1.5 py-0.5 px-1");
+  });
+
+  it("keeps provider reasoning summaries behind a clickable Thinking row", () => {
+    const turnId = TurnId.make("turn-1");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt={MESSAGE_CREATED_AT}
+        latestTurn={{
+          turnId,
+          state: "running",
+          startedAt: MESSAGE_CREATED_AT,
+          completedAt: null,
+        }}
+        runningTurnId={turnId}
+        timelineEntries={[
+          {
+            id: "reasoning-entry",
+            kind: "work",
+            createdAt: MESSAGE_CREATED_AT,
+            entry: {
+              id: "reasoning-summary:turn-1",
+              createdAt: MESSAGE_CREATED_AT,
+              turnId,
+              label: "Thinking",
+              detail: "I checked the relevant constraints before choosing the implementation.",
+              tone: "thinking",
+              sourceActivityKind: "reasoning.summary",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Thinking");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain("I checked the relevant constraints");
   });
 
   it("renders review comment contexts as structured cards instead of raw tags", () => {
